@@ -1,6 +1,6 @@
 // Экраны приложения: анкета, «Сегодня», «План» (а позже — календарь и успехи).
 
-import { BY_ID, MUSCLES, PATTERNS, options } from "./exercises.js";
+import { BY_ID, DEFAULT_EXCLUDED, MUSCLES, PATTERNS, options } from "./exercises.js";
 import {
   CYCLE_WEEKS, DEFAULT_DAYS, GOALS, INJURIES, LEVELS, RECOVERY, WEEKDAYS, WEEKDAYS_FULL,
   cycleWeek, generatePlan, isoDate, profileSummary, recoveryLevel, sessionMinutes, weekNote, weekdayIndex, workoutFor,
@@ -114,10 +114,11 @@ const STEPS = [
 ];
 
 function startOnboarding(fromProfile) {
-  Object.assign(draft, fromProfile || { goal: "recomp", level: "advanced", days: DEFAULT_DAYS[4], duration: 60, priority: [], injuries: [], cardio: true, weight: "", height: "" });
+  Object.assign(draft, fromProfile || { goal: "recomp", level: "advanced", days: DEFAULT_DAYS[4], duration: 60, priority: [], injuries: [], cardio: true, weight: "", height: "", excluded: DEFAULT_EXCLUDED });
   draft.days = [...draft.days];
   draft.priority = [...draft.priority];
   draft.injuries = [...draft.injuries];
+  draft.excluded = [...(draft.excluded || DEFAULT_EXCLUDED)];
   step = fromProfile ? 1 : 0;
   renderOnboarding();
 }
@@ -396,7 +397,7 @@ function openExercise(ref) {
   }
   const ex = BY_ID[item.exercise];
   const used = session ? session.items.map((it) => it.exercise) : [];
-  const alts = light ? [] : options(item.pattern, state.profile.injuries).filter((e) => !used.includes(e.id));
+  const alts = light ? [] : options(item.pattern, state.profile.injuries, state.profile.excluded).filter((e) => !used.includes(e.id));
 
   const doseBlocks = item.cardio
     ? `<div><span>Время</span><b>${item.minutes} мин</b></div><div><span>Темп</span><b>Ровный</b></div><div><span>Пульс</span><b>Можно говорить</b></div>`
@@ -412,6 +413,7 @@ function openExercise(ref) {
       <p class="tip">${esc(ex.tip)}</p>
       ${alts.length ? `<h3 class="section-title">Заменить на</h3>
         ${alts.map((a) => `<button type="button" class="alt" data-swap="${ref}:${a.id}"><b>${esc(a.name)}</b><span>Выбрать</span></button>`).join("")}` : ""}
+      ${light ? "" : `<button type="button" class="btn danger" data-exclude="${ex.id}">Нет в моём зале — убрать из плана</button>`}
       <button type="button" class="btn secondary" data-close>Закрыть</button>
     </div>`;
   sheet.hidden = false;
@@ -419,6 +421,17 @@ function openExercise(ref) {
 
 sheet.addEventListener("click", (e) => {
   if (e.target === sheet || e.target.closest("[data-close]")) { sheet.hidden = true; return; }
+  const exclude = e.target.closest("[data-exclude]");
+  if (exclude) {
+    const name = BY_ID[exclude.dataset.exclude].name;
+    if (!confirm(`Убрать «${name}» из плана навсегда? Приложение подберёт замену.`)) return;
+    excludeExercise(exclude.dataset.exclude);
+    persist();
+    sheet.hidden = true;
+    render();
+    toast(`«${name}» больше не будет в плане`);
+    return;
+  }
   const swap = e.target.closest("[data-swap]");
   if (swap) {
     const [sIdx, iIdx, id] = swap.dataset.swap.split(":");
@@ -450,6 +463,31 @@ app.addEventListener("change", (e) => {
   if (e.target.value === "" || Number.isNaN(pct)) return;
   setRecovery(recoveryLevel(pct), pct);
 });
+
+// ---------- Упражнения, которых нет в зале ----------
+
+/** Убирает упражнение из плана навсегда: везде ставит замену того же типа (или убирает, если замены нет). */
+function excludeExercise(id) {
+  const profile = state.profile;
+  if (!profile.excluded.includes(id)) profile.excluded.push(id);
+  for (const session of state.plan.sessions) {
+    for (let i = session.items.length - 1; i >= 0; i--) {
+      const item = session.items[i];
+      if (item.exercise !== id) continue;
+      const used = session.items.map((it) => it.exercise);
+      const replacement = options(item.pattern, profile.injuries, profile.excluded).find((e) => !used.includes(e.id));
+      if (replacement) item.exercise = replacement.id;
+      else session.items.splice(i, 1);
+    }
+  }
+}
+
+// Планы, составленные до появления списка «нет в зале», — убираем из них упражнения на турнике
+if (state.profile && !state.profile.excluded) {
+  state.profile.excluded = [];
+  if (state.plan) DEFAULT_EXCLUDED.forEach(excludeExercise);
+  persist();
+}
 
 // ---------- Главная отрисовка ----------
 

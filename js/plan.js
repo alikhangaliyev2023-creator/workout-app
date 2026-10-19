@@ -87,7 +87,7 @@ function buildSession(key, profile) {
   const used = new Set();
   const items = [];
   for (const [pattern, role, variant = 0] of template.slots) {
-    const choices = options(pattern, profile.injuries).filter((e) => !used.has(e.id));
+    const choices = options(pattern, profile.injuries, profile.excluded).filter((e) => !used.has(e.id));
     if (!choices.length) continue;  // все варианты нельзя из-за травм — пропускаем движение
     // Для базовых ролей сначала базовые упражнения; вариант — чтобы в разные дни были разные упражнения
     const pool = role === "accessory" ? choices : choices.filter((e) => e.type === "compound").concat(choices.filter((e) => e.type !== "compound"));
@@ -192,7 +192,7 @@ export function generatePlan(profile) {
   const days = [...profile.days].sort((a, b) => a - b);
   const split = SPLITS[days.length];
   const [cardioMinutes, cardioSessions] = profile.cardio ? CARDIO[profile.goal].map((v, i) => (v || (i === 0 ? 15 : 1))) : [0, 0];
-  const cardioPick = options("cardio", profile.injuries)[0];
+  const cardioPick = options("cardio", profile.injuries, profile.excluded)[0];
 
   const sessions = split.sessions.map((key, i) => {
     const session = buildSession(key, profile);

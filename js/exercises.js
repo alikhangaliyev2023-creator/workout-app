@@ -173,7 +173,10 @@ export const EXERCISES = [
 
 export const BY_ID = Object.fromEntries(EXERCISES.map((e) => [e.id, e]));
 
-/** Подходящие упражнения для типа движения без тех, что нельзя при травмах. */
-export function options(pattern, injuries = []) {
-  return EXERCISES.filter((e) => e.pattern === pattern && !e.avoid.some((a) => injuries.includes(a)));
+/** Подходящие упражнения для типа движения: без тех, что нельзя при травмах, и тех, которых нет в зале. */
+export function options(pattern, injuries = [], excluded = []) {
+  return EXERCISES.filter((e) => e.pattern === pattern && !excluded.includes(e.id) && !e.avoid.some((a) => injuries.includes(a)));
 }
+
+// Для них нужен турник — в зале его нет, поэтому по умолчанию не предлагаем
+export const DEFAULT_EXCLUDED = ["pullup", "hanging_raise"];
