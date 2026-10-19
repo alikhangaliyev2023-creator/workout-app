@@ -3,7 +3,7 @@
 import { BY_ID, DEFAULT_EXCLUDED, MUSCLES, PATTERNS, options } from "./exercises.js";
 import {
   CYCLE_WEEKS, DEFAULT_DAYS, GOALS, INJURIES, LEVELS, RECOVERY, WEEKDAYS, WEEKDAYS_FULL,
-  cycleWeek, generatePlan, isoDate, profileSummary, recoveryLevel, sessionMinutes, weekNote, weekdayIndex, workoutFor,
+  SPLIT_OPTIONS, cycleWeek, generatePlan, isoDate, splitFor, profileSummary, recoveryLevel, sessionMinutes, weekNote, weekdayIndex, workoutFor,
 } from "./plan.js";
 import * as store from "./store.js";
 
@@ -91,6 +91,7 @@ const STEPS = [
     ],
   },
   { key: "days", title: "В какие дни тренируешься?", hint: "Выбери от 2 до 6 дней. От их числа зависит схема программы." },
+  { key: "split", title: "Как делить мышцы по дням?", hint: "Варианты зависят от числа дней. В раздельной схеме грудь и спина — в разные дни." },
   {
     key: "duration", title: "Сколько длится тренировка?", hint: "Включая разминку и кардио.",
     chips: [[45, "45 мин"], [60, "1 час"], [75, "1 ч 15 мин"], [90, "1,5 часа"]],
@@ -133,7 +134,7 @@ function renderOnboarding() {
       <section class="onb welcome">
         <div class="logo">🏋️</div>
         <h1>Составим план под тебя</h1>
-        <p class="hint">8 коротких вопросов — и у тебя программа тренировок с подходами, повторами и прогрессией весов.</p>
+        <p class="hint">9 коротких вопросов — и у тебя программа тренировок с подходами, повторами и прогрессией весов.</p>
         <button class="btn" data-next>Начать</button>
       </section>`;
     return;
@@ -153,6 +154,13 @@ function renderOnboarding() {
     body = `<div class="days-grid">${WEEKDAYS.map((d, i) =>
       `<button type="button" class="chip ${draft.days.includes(i) ? "active" : ""}" data-value="${i}">${d}</button>`).join("")}</div>
       <p class="hint" style="margin-top:14px">${daysHint(draft.days.length)}</p>`;
+  } else if (s.key === "split") {
+    const current = splitFor(draft).id;
+    body = `<div class="choices">${SPLIT_OPTIONS[draft.days.length].map((o) => `
+      <button type="button" class="choice ${o.id === current ? "active" : ""}" data-value='${JSON.stringify(o.id)}'>
+        <span><b>${esc(o.name)}</b><small>${esc(o.desc)}</small>
+        <small class="${o.mixes ? "" : "ok"}">${o.mixes ? "Грудь и спина бывают в один день" : "✓ Грудь и спина — в разные дни"}</small></span>
+      </button>`).join("")}</div>`;
   } else if (s.key === "body") {
     body = `
       <label class="field"><span>Вес, кг</span><input type="number" inputmode="decimal" name="weight" value="${esc(draft.weight)}" placeholder="—"></label>
@@ -177,8 +185,7 @@ function renderOnboarding() {
 }
 
 function daysHint(n) {
-  const scheme = { 2: "Всё тело ×2", 3: "Всё тело ×3", 4: "Верх / низ", 5: "Жим / тяга / ноги + верх / низ", 6: "Жим / тяга / ноги ×2" }[n];
-  return scheme ? `${n} дн. в неделю → схема «${scheme}»` : "Выбери от 2 до 6 дней";
+  return n >= 2 && n <= 6 ? `${n} дн. в неделю — схему тренировок выберешь на следующем шаге` : "Выбери от 2 до 6 дней";
 }
 
 app.addEventListener("click", (e) => {
@@ -221,7 +228,7 @@ app.addEventListener("click", (e) => {
 
 function finishOnboarding() {
   app.innerHTML = `<section class="building"><div class="spinner"></div><h2>Собираю план…</h2><p class="hint">Подбираю упражнения под цель и время</p></section>`;
-  const profile = { ...draft, weight: draft.weight ? Number(draft.weight) : null, height: draft.height ? Number(draft.height) : null };
+  const profile = { ...draft, split: splitFor(draft).id, weight: draft.weight ? Number(draft.weight) : null, height: draft.height ? Number(draft.height) : null };
   setTimeout(() => {
     state.profile = profile;
     state.plan = generatePlan(profile);

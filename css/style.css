@@ -241,6 +241,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .choice b { display: block; font-size: 17px; }
 .choice small { display: block; color: var(--muted); font-size: 14px; line-height: 1.35; margin-top: 2px; }
 .choice.active { border-color: var(--accent); background: var(--accent-soft); }
+.choice small.ok { color: var(--green); font-weight: 600; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {

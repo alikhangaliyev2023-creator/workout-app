@@ -38,14 +38,50 @@ const SESSIONS = {
   legs_2:  { name: "Ноги 2", focus: "Задняя поверхность, ягодицы", slots: [["hinge", "main", 1], ["squat", "secondary", 2], ["lunge", "secondary", 1], ["legcurl", "accessory", 1], ["calves", "accessory", 1], ["core", "accessory", 1]] },
 };
 
-// Схема по числу дней в неделю
-const SPLITS = {
-  2: { name: "Всё тело ×2", sessions: ["full_a", "full_b"] },
-  3: { name: "Всё тело ×3", sessions: ["full_a", "full_b", "full_c"] },
-  4: { name: "Верх / низ", sessions: ["upper_a", "lower_a", "upper_b", "lower_b"] },
-  5: { name: "Жим / тяга / ноги + верх / низ", sessions: ["push", "pull", "legs", "upper_a", "lower_b"] },
-  6: { name: "Жим / тяга / ноги ×2", sessions: ["push", "pull", "legs", "push_2", "pull_2", "legs_2"] },
+// Раздельные тренировки: в один день — одна-две группы мышц, грудь и спина — в разные дни
+Object.assign(SESSIONS, {
+  chest_tri:  { name: "Грудь + трицепс", focus: "Грудь, трицепс", slots: [["hpress", "main"], ["ipress", "secondary"], ["hpress", "secondary", 1], ["fly", "accessory"], ["triceps", "accessory"], ["triceps", "accessory", 1]] },
+  back_bi:    { name: "Спина + бицепс", focus: "Спина, бицепс", slots: [["vpull", "main"], ["hpull", "main"], ["hpull", "secondary", 2], ["vpull", "secondary", 1], ["biceps", "accessory"], ["biceps", "accessory", 1]] },
+  // Номер варианта — среди ещё не выбранных в этот день упражнений; руки берём другие, чем в днях груди и спины
+  shoulders_arms: { name: "Плечи + руки", focus: "Плечи, бицепс, трицепс", slots: [["vpress", "main"], ["vpress", "secondary", 1], ["lateral", "accessory"], ["reardelt", "accessory"], ["biceps", "accessory", 3], ["triceps", "accessory", 3], ["biceps", "accessory", 1], ["triceps", "accessory", 1]] },
+  legs_shoulders: { name: "Ноги + плечи", focus: "Ноги, плечи", slots: [["squat", "main"], ["hinge", "secondary"], ["vpress", "secondary"], ["legcurl", "accessory"], ["lateral", "accessory"], ["calves", "accessory"]] },
+  chest:      { name: "Грудь", focus: "Грудь со всех углов", slots: [["hpress", "main"], ["ipress", "main"], ["hpress", "secondary", 1], ["ipress", "secondary", 1], ["fly", "accessory"], ["fly", "accessory", 1]] },
+  back:       { name: "Спина", focus: "Ширина и толщина спины", slots: [["vpull", "main"], ["hpull", "main"], ["hpull", "secondary", 2], ["vpull", "secondary", 1], ["hpull", "secondary", 3], ["reardelt", "accessory"]] },
+  shoulders:  { name: "Плечи", focus: "Передняя, средняя и задняя дельта", slots: [["vpress", "main"], ["vpress", "secondary", 1], ["lateral", "accessory"], ["lateral", "accessory", 1], ["reardelt", "accessory"], ["reardelt", "accessory", 1], ["core", "accessory"]] },
+  arms:       { name: "Руки", focus: "Бицепс и трицепс", slots: [["biceps", "secondary"], ["triceps", "secondary"], ["biceps", "accessory", 1], ["triceps", "accessory", 1], ["biceps", "accessory", 2], ["triceps", "accessory", 2]] },
+});
+
+// Схемы (сплиты) для каждого числа дней. mixes — бывают ли грудь и спина в один день.
+export const SPLIT_OPTIONS = {
+  2: [
+    { id: "full2", name: "Всё тело ×2", desc: "Каждая тренировка — всё тело", mixes: true, sessions: ["full_a", "full_b"] },
+    { id: "ul2", name: "Верх / низ", desc: "День верха, день ног", mixes: true, sessions: ["upper_a", "lower_a"] },
+  ],
+  3: [
+    { id: "ppl3", name: "Жим / тяга / ноги", desc: "Грудь + плечи + трицепс · спина + бицепс · ноги", mixes: false, sessions: ["push", "pull", "legs"] },
+    { id: "split3", name: "Раздельный", desc: "Грудь + трицепс · спина + бицепс · ноги + плечи", mixes: false, sessions: ["chest_tri", "back_bi", "legs_shoulders"] },
+    { id: "full3", name: "Всё тело ×3", desc: "Каждая тренировка — всё тело", mixes: true, sessions: ["full_a", "full_b", "full_c"] },
+  ],
+  4: [
+    { id: "split4", name: "Раздельный", desc: "Грудь + трицепс · спина + бицепс · ноги · плечи + руки", mixes: false, sessions: ["chest_tri", "back_bi", "legs", "shoulders_arms"] },
+    { id: "ul4", name: "Верх / низ", desc: "Верх тела ×2 и ноги ×2 — каждая мышца дважды в неделю", mixes: true, sessions: ["upper_a", "lower_a", "upper_b", "lower_b"] },
+  ],
+  5: [
+    { id: "bro5", name: "Раздельный", desc: "Грудь · спина · ноги · плечи · руки — каждой мышце свой день", mixes: false, sessions: ["chest", "back", "legs", "shoulders", "arms"] },
+    { id: "split5", name: "Раздельный + ноги ×2", desc: "Грудь + трицепс · спина + бицепс · ноги · плечи + руки · ноги", mixes: false, sessions: ["chest_tri", "back_bi", "legs", "shoulders_arms", "legs_2"] },
+    { id: "pplul5", name: "Жим / тяга / ноги + верх / низ", desc: "Каждая мышца почти дважды в неделю", mixes: true, sessions: ["push", "pull", "legs", "upper_a", "lower_b"] },
+  ],
+  6: [
+    { id: "ppl6", name: "Жим / тяга / ноги ×2", desc: "Грудь + плечи + трицепс · спина + бицепс · ноги, дважды", mixes: false, sessions: ["push", "pull", "legs", "push_2", "pull_2", "legs_2"] },
+    { id: "split6", name: "Раздельный ×2", desc: "Грудь + трицепс · спина + бицепс · ноги + плечи, дважды", mixes: false, sessions: ["chest_tri", "back_bi", "legs_shoulders", "chest_tri", "back_bi", "legs_shoulders"] },
+  ],
 };
+
+/** Схема из анкеты; если её нет или она не подходит к числу дней — первая для этого числа дней. */
+export function splitFor(profile) {
+  const list = SPLIT_OPTIONS[profile.days.length];
+  return list.find((o) => o.id === profile.split) || list[0];
+}
 
 // Подходы, повторы и отдых (секунды) по цели и роли упражнения
 const DOSES = {
@@ -190,7 +226,7 @@ function fixSupersets(items) {
 /** Главная функция: анкета → план. */
 export function generatePlan(profile) {
   const days = [...profile.days].sort((a, b) => a - b);
-  const split = SPLITS[days.length];
+  const split = splitFor(profile);
   const [cardioMinutes, cardioSessions] = profile.cardio ? CARDIO[profile.goal].map((v, i) => (v || (i === 0 ? 15 : 1))) : [0, 0];
   const cardioPick = options("cardio", profile.injuries, profile.excluded)[0];
 
