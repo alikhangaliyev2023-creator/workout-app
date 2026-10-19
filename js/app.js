@@ -131,10 +131,15 @@ function renderOnboarding() {
 
   if (s.key === "welcome") {
     app.innerHTML = `
+      <div class="blobs"><i></i><i></i><i></i></div>
       <section class="onb welcome">
-        <div class="logo">🏋️</div>
-        <h1>Составим план под тебя</h1>
-        <p class="hint">9 коротких вопросов — и у тебя программа тренировок с подходами, повторами и прогрессией весов.</p>
+        <h1>Тренировки, которые подстраиваются под тебя</h1>
+        <p class="hint">9 коротких вопросов — и готова программа под твою цель, время и зал.</p>
+        <div class="features">
+          <div><span>🧠</span>План подбирается сам — по цели, опыту и дням</div>
+          <div><span>💚</span>Учитывает восстановление из WHOOP</div>
+          <div><span>📈</span>Веса растут по циклу из 6 недель</div>
+        </div>
         <button class="btn" data-next>Начать</button>
       </section>`;
     return;
@@ -255,6 +260,39 @@ function nextSession(from) {
   return null;
 }
 
+// ---------- Цвета тренировок и кольцо восстановления ----------
+
+// У каждой группы мышц свой цвет — тренировка дня окрашена в цвет своих мышц
+const THEMES = {
+  chest: ["#ff5f6d", "#ff9a5c"],
+  back: ["#3a5bff", "#6f8cff"],
+  legs: ["#7c4dff", "#b07cff"],
+  shoulders: ["#ff9f1c", "#ffc94a"],
+  arms: ["#00a99d", "#3fd4bf"],
+  upper: ["#3a5bff", "#ff5f6d"],
+  full: ["#12b76a", "#4fd1a5"],
+  light: ["#38bdf8", "#7dd3fc"],
+};
+function themeOf(session) {
+  const key = session.light ? "light" : session.key;
+  const name = /^(chest|push)/.test(key) ? "chest" : /^(back|pull)/.test(key) ? "back"
+    : /^(legs|lower)/.test(key) ? "legs" : /^shoulders/.test(key) ? "shoulders"
+    : key === "arms" ? "arms" : /^upper/.test(key) ? "upper" : key === "light" ? "light" : "full";
+  const [c1, c2] = THEMES[name];
+  return `--c1:${c1};--c2:${c2}`;
+}
+
+function ring(level, pct) {
+  const r = 50, full = 2 * Math.PI * r;
+  const value = pct != null ? pct : { green: 85, yellow: 50, red: 20 }[level] || 0;
+  return `<svg class="ring" viewBox="0 0 120 120" style="--full:${full.toFixed(1)}">
+    <circle class="ring-bg" cx="60" cy="60" r="${r}"/>
+    ${level ? `<circle class="ring-fg" cx="60" cy="60" r="${r}" stroke-dasharray="${full.toFixed(1)}" stroke-dashoffset="${(full * (1 - value / 100)).toFixed(1)}"/>` : ""}
+  </svg>`;
+}
+
+const PLAY_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
+
 function exerciseList(items, sessionIndex) {
   return `<ul class="ex-list">${items.map((it, i) => {
     const ex = BY_ID[it.exercise];
@@ -263,6 +301,34 @@ function exerciseList(items, sessionIndex) {
       <span class="ex-body"><span class="ex-name">${esc(ex.name)}</span><span class="ex-dose">${dose(it)}</span></span>
       <span class="ex-chev">›</span></button></li>`;
   }).join("")}</ul>`;
+}
+
+/** Цветная карточка тренировки: шапка в цветах мышц и список упражнений. */
+function sessionCard(w, ref, { kicker, start = false, note = "" } = {}) {
+  return `
+    <section class="card session rise" style="${themeOf(w)}">
+      <div class="session-head">
+        <div class="kicker">${esc(kicker)}</div>
+        <h2>${esc(w.name)}</h2>
+        <p>${esc(w.focus)}</p>
+        <div class="chips">
+          <span class="pill">⏱ ~${sessionMinutes(w.items)} мин</span>
+          <span class="pill">${w.items.length} упр.</span>
+          ${w.reduced ? '<span class="pill">−1 подход</span>' : ""}
+          ${w.deload ? '<span class="pill">Разгрузка</span>' : ""}
+        </div>
+      </div>
+      <div class="session-body">
+        ${exerciseList(w.items, ref)}
+        ${start ? `<button type="button" class="start-btn" data-start>${PLAY_ICON} Начать тренировку</button>` : ""}
+        ${note ? `<p class="session-note">${note}</p>` : ""}
+      </div>
+    </section>`;
+}
+
+function greeting(now) {
+  const h = now.getHours();
+  return h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
 }
 
 function renderToday() {
@@ -275,47 +341,49 @@ function renderToday() {
   const session = sessionForDay(weekdayIndex(now));
 
   const recoveryCard = `
-    <section class="card">
-      <div class="recovery-head"><b>Восстановление</b><span>из WHOOP</span></div>
-      <div class="recovery-options">${Object.entries(RECOVERY).map(([key, r]) => `
-        <button type="button" class="rec-btn ${key} ${level === key ? "active" : ""}" data-rec="${key}">
-          <i>${r.emoji}</i><b>${r.label}</b><small>${r.range}</small></button>`).join("")}
+    <section class="card recovery rise ${level || ""}">
+      <div class="rec-top">
+        <div class="ring-wrap">${ring(level, rec && rec.pct)}
+          <div class="ring-label"><b>${rec && rec.pct != null ? rec.pct + "%" : level ? RECOVERY[level].emoji : "?"}</b><small>WHOOP</small></div>
+        </div>
+        <div class="rec-text">
+          <small>Восстановление</small>
+          <h2>${level ? RECOVERY[level].label : "Не отмечено"}</h2>
+          <p>${level ? RECOVERY[level].note : "Посмотри процент в WHOOP и отметь его — тренировка подстроится."}</p>
+        </div>
       </div>
-      <label class="rec-pct">или точно, %: <input type="number" inputmode="numeric" min="0" max="100" id="rec-pct" value="${rec && rec.pct != null ? rec.pct : ""}" placeholder="—"></label>
-      <p class="rec-note ${level || ""}">${level ? RECOVERY[level].note : "Отметь утром восстановление — приложение подстроит тренировку."}</p>
+      <div class="rec-controls">
+        ${Object.entries(RECOVERY).map(([key, r]) => `
+          <button type="button" class="rec-btn ${key} ${level === key ? "active" : ""}" data-rec="${key}"><i></i>${r.label}</button>`).join("")}
+        <input class="rec-pct" type="number" inputmode="numeric" min="0" max="100" id="rec-pct" value="${rec && rec.pct != null ? rec.pct : ""}" placeholder="%" aria-label="Процент восстановления">
+      </div>
     </section>`;
 
   let workoutCard;
   if (session) {
     const idx = state.plan.sessions.indexOf(session);
     const w = workoutFor(state.plan, session, week, level);
-    workoutCard = `
-      <section class="card">
-        <div class="eyebrow">Неделя ${week} из ${CYCLE_WEEKS}${w.deload ? " · разгрузка" : ""}</div>
-        <h2>${esc(w.name)}</h2>
-        <p class="sub">${esc(w.focus)}</p>
-        <div class="meta-row">
-          <span class="pill">⏱ ~${sessionMinutes(w.items)} мин</span>
-          <span class="pill">${w.items.length} упр.</span>
-          ${level === "yellow" && !w.deload ? '<span class="pill deload">−1 подход</span>' : ""}
-        </div>
-        ${exerciseList(w.items, w.light ? "light" : idx)}
-        <button type="button" class="btn" data-start>Начать тренировку</button>
-        <p class="cycle-note">${w.light ? "Тяжёлую тренировку можно сделать завтра — переносы появятся вместе с календарём." : weekNote(week)}</p>
-      </section>`;
+    w.reduced = level === "yellow" && !w.deload;
+    workoutCard = sessionCard(w, w.light ? "light" : idx, {
+      kicker: `Сегодня · неделя ${week} из ${CYCLE_WEEKS}`,
+      start: true,
+      note: w.light ? "Тяжёлую тренировку можно сделать завтра — переносы появятся вместе с календарём." : weekNote(week),
+    });
   } else {
     const next = nextSession(now);
     workoutCard = `
-      <section class="card">
-        <div class="eyebrow">Неделя ${week} из ${CYCLE_WEEKS}</div>
-        <h2>День отдыха 😌</h2>
-        <p class="sub">Мышцы растут во время отдыха. Хорошо поспи и добери белок.</p>
-        ${next ? `<div class="meta-row"><span class="pill accent">${next.inDays === 1 ? "Завтра" : WEEKDAYS_FULL[weekdayIndex(next.date)]}: ${esc(next.session.name)}</span></div>` : ""}
+      <section class="card rest rise">
+        <div class="emoji">😌</div>
+        <h2>День отдыха</h2>
+        <p class="sub">Мышцы растут, пока ты отдыхаешь. Выспись и добери белок.</p>
+        ${next ? `<div class="next" style="${themeOf(next.session)}"><i></i><div>
+          <small>${next.inDays === 1 ? "Завтра" : WEEKDAYS_FULL[weekdayIndex(next.date)]}</small>
+          <b>${esc(next.session.name)}</b></div></div>` : ""}
       </section>`;
   }
 
   app.innerHTML = `
-    <header class="large-title"><small>${esc(dateLabel)}</small><h1>Сегодня</h1></header>
+    <header class="large-title"><small>${esc(dateLabel)}</small><h1>${greeting(now)}</h1></header>
     ${recoveryCard}
     ${workoutCard}`;
 }
@@ -340,47 +408,54 @@ function renderPlan() {
 
   const cycle = Array.from({ length: CYCLE_WEEKS }, (_, i) => {
     const n = i + 1;
-    const cls = [n === CYCLE_WEEKS ? "deload" : "", n < week ? "done" : "", n === week ? "now" : ""].join(" ");
-    return `<i class="${cls}"></i>`;
+    const now = n === week ? "now" : "";
+    const cls = [n === CYCLE_WEEKS ? "deload" : "", n < week ? "done" : "", now].join(" ");
+    return `<div><i class="${cls}"></i><span class="${now}">${n === CYCLE_WEEKS ? "Р" : n}</span></div>`;
   }).join("");
+
+  // Карточки начинаются с ближайшей тренировки
+  const order = plan.sessions.map((s, idx) => ({ s, idx }));
+  const first = Math.max(0, order.findIndex(({ s }) => s.weekday >= todayIdx));
 
   app.innerHTML = `
     <header class="large-title"><small>${esc(plan.split)}</small><h1>План</h1></header>
 
-    <section class="card">
-      <div class="facts">
-        <div><span>Цель</span><b>${esc(summary.goal)}</b></div>
-        <div><span>Опыт</span><b>${esc(summary.level)}</b></div>
-        <div><span>Тренировок</span><b>${plan.sessions.length} в неделю</b></div>
-        <div><span>Длительность</span><b>до ${p.duration} мин</b></div>
-        <div><span>Приоритет</span><b>${esc(summary.priority)}</b></div>
-        <div><span>Кардио</span><b>${p.cardio ? "Да" : "Нет"}</b></div>
-      </div>
-    </section>
+    <div class="summary rise">
+      <span class="pill">🎯 ${esc(summary.goal)}</span>
+      <span class="pill">📅 ${plan.sessions.length} <span>в неделю</span></span>
+      <span class="pill">⏱ до ${p.duration} <span>мин</span></span>
+      <span class="pill">⭐️ ${esc(summary.priority)}</span>
+      <span class="pill">${p.cardio ? "🚴 с кардио" : "🏋️ без кардио"}</span>
+    </div>
 
     <h3 class="section-title">Цикл · неделя ${week} из ${CYCLE_WEEKS}</h3>
-    <section class="card">
+    <section class="card rise">
       <div class="cycle">${cycle}</div>
       <p class="cycle-note">${weekNote(week)}</p>
     </section>
 
     <h3 class="section-title">Неделя</h3>
     <div class="week-strip">${WEEKDAYS.map((d, i) => {
-      const train = plan.sessions.some((s) => s.weekday === i);
-      return `<div class="wd ${train ? "train" : ""} ${i === todayIdx ? "today" : ""}">${d}<i></i></div>`;
+      const s = plan.sessions.find((x) => x.weekday === i);
+      return `<button type="button" class="wd ${s ? "train" : ""} ${i === todayIdx ? "today" : ""}" ${s ? `style="${themeOf(s)}" data-goto="${plan.sessions.indexOf(s)}"` : ""}>${d}<i></i></button>`;
     }).join("")}</div>
 
     <h3 class="section-title">Тренировки</h3>
-    ${plan.sessions.map((s, idx) => `
-      <section class="card day-card">
-        <div class="day-name">${WEEKDAYS_FULL[s.weekday]}</div>
-        <h2>${esc(s.name)}</h2>
-        <p class="sub">${esc(s.focus)} · ~${sessionMinutes(s.items)} мин</p>
-        ${exerciseList(s.items, idx)}
-      </section>`).join("")}
+    <div class="days-scroller" id="days">
+      ${order.map(({ s, idx }) => sessionCard(s, idx, { kicker: WEEKDAYS_FULL[s.weekday] })).join("")}
+    </div>
+    <div class="dots" id="dots">${order.map((_, i) => `<i class="${i === first ? "on" : ""}"></i>`).join("")}</div>
 
     <button type="button" class="btn secondary" data-redo>Изменить анкету и пересобрать план</button>
-    <p class="cycle-note" style="text-align:center">Нажми на упражнение, чтобы посмотреть технику или заменить его.</p>`;
+    <p class="hint-center">Листай тренировки вбок. Нажми на упражнение — техника и замена.</p>`;
+
+  const scroller = document.getElementById("days");
+  const cards = [...scroller.children];
+  scroller.scrollLeft = cards[first].offsetLeft - 18;
+  scroller.addEventListener("scroll", () => {
+    const i = Math.round(scroller.scrollLeft / (cards[0].offsetWidth + 12));
+    document.querySelectorAll("#dots i").forEach((d, j) => d.classList.toggle("on", j === i));
+  }, { passive: true });
 }
 
 // ---------- Пока не готовые экраны ----------
@@ -458,6 +533,12 @@ app.addEventListener("click", (e) => {
   if (ex) { openExercise(ex.dataset.ex); return; }
   const rec = e.target.closest("[data-rec]");
   if (rec) { setRecovery(rec.dataset.rec); return; }
+  const goto = e.target.closest("[data-goto]");
+  if (goto) {
+    const card = document.getElementById("days").children[Number(goto.dataset.goto)];
+    card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    return;
+  }
   if (e.target.closest("[data-start]")) { toast("Запись подходов и весов появится на шаге 3 🙂"); return; }
   if (e.target.closest("[data-redo]")) {
     if (confirm("Пройти анкету заново? План пересоберётся, замены упражнений сбросятся.")) startOnboarding(state.profile);
