@@ -62,6 +62,7 @@ tabbar.addEventListener("click", (e) => {
   const button = e.target.closest("button[data-tab]");
   if (!button) return;
   view = button.dataset.tab;
+  cal.mode = null;
   render();
   window.scrollTo(0, 0);
 });
@@ -237,6 +238,7 @@ function finishOnboarding() {
   setTimeout(() => {
     state.profile = profile;
     state.plan = generatePlan(profile);
+    dropFutureMoves();
     persist();
     view = "plan";
     render();
@@ -254,7 +256,7 @@ function nextSession(from) {
   for (let i = 1; i <= 7; i++) {
     const d = new Date(from);
     d.setDate(d.getDate() + i);
-    const s = sessionForDay(weekdayIndex(d));
+    const s = sessionOn(d);
     if (s) return { session: s, date: d, inDays: i };
   }
   return null;
@@ -304,7 +306,7 @@ function exerciseList(items, sessionIndex) {
 }
 
 /** Цветная карточка тренировки: шапка в цветах мышц и список упражнений. */
-function sessionCard(w, ref, { kicker, start = false, note = "" } = {}) {
+function sessionCard(w, ref, { kicker, start = false, note = "", extra = "" } = {}) {
   return `
     <section class="card session rise" style="${themeOf(w)}">
       <div class="session-head">
@@ -321,6 +323,7 @@ function sessionCard(w, ref, { kicker, start = false, note = "" } = {}) {
       <div class="session-body">
         ${exerciseList(w.items, ref)}
         ${start ? `<button type="button" class="start-btn" data-start>${PLAY_ICON} Начать тренировку</button>` : ""}
+        ${extra}
         ${note ? `<p class="session-note">${note}</p>` : ""}
       </div>
     </section>`;
@@ -338,7 +341,8 @@ function renderToday() {
   const week = cycleWeek(state.plan);
   const rec = state.recovery[todayIso()];
   const level = rec ? rec.level : null;
-  const session = sessionForDay(weekdayIndex(now));
+  const session = sessionOn(now);
+  const dayMark = state.days[todayIso()] || {};
 
   const recoveryCard = `
     <section class="card recovery rise ${level || ""}">
@@ -364,10 +368,17 @@ function renderToday() {
     const idx = state.plan.sessions.indexOf(session);
     const w = workoutFor(state.plan, session, week, level);
     w.reduced = level === "yellow" && !w.deload;
+    const done = dayMark.status === "done";
     workoutCard = sessionCard(w, w.light ? "light" : idx, {
-      kicker: `Сегодня · неделя ${week} из ${CYCLE_WEEKS}`,
-      start: true,
-      note: w.light ? "Тяжёлую тренировку можно сделать завтра — переносы появятся вместе с календарём." : weekNote(week),
+      kicker: done ? "Сегодня · выполнено ✓" : `Сегодня · неделя ${week} из ${CYCLE_WEEKS}`,
+      start: !done,
+      extra: done
+        ? `<div class="today-done">🎉 Тренировка засчитана<button type="button" data-today-done>Снять</button></div>`
+        : `<div class="today-actions">
+            <button type="button" class="act" data-today-done>✓ Уже сделал</button>
+            <button type="button" class="act" data-today-move>↪ Перенести</button>
+          </div>`,
+      note: done ? "" : w.light ? `Тяжёлую «${esc(session.name)}» лучше перенести на день с хорошим восстановлением — нажми «Перенести».` : weekNote(week),
     });
   } else {
     const next = nextSession(now);
@@ -458,6 +469,274 @@ function renderPlan() {
   }, { passive: true });
 }
 
+// ---------- Календарь: что стоит на конкретную дату ----------
+
+// state.days[дата] = { session: номер тренировки или null (перенесена / убрана),
+//                      status: "done" | "skipped", name и key — какая тренировка была сделана }
+const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+
+const fromIso = (iso) => new Date(iso + "T00:00:00");
+function addDays(d, n) {
+  const r = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  r.setDate(r.getDate() + n);
+  return r;
+}
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const longDay = (d) => capitalize(d.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" }));
+
+/** Тренировка по шаблону недели (без учёта переносов). */
+function plannedIdx(iso) {
+  if (iso < state.plan.startDate) return null;
+  const s = sessionForDay(weekdayIndex(fromIso(iso)));
+  return s ? state.plan.sessions.indexOf(s) : null;
+}
+/** Номер тренировки на дату с учётом переносов, или null — отдых. */
+function sessionIdxOn(iso) {
+  const d = state.days[iso];
+  if (d && "session" in d) return d.session != null && d.session < state.plan.sessions.length ? d.session : null;
+  return plannedIdx(iso);
+}
+function sessionOn(date) {
+  const idx = sessionIdxOn(isoDate(date));
+  return idx == null ? null : state.plan.sessions[idx];
+}
+
+/** Меняет отметку дня; пустые записи и переносы «как по плану» убирает. */
+function setDay(iso, patch) {
+  const d = { ...state.days[iso], ...patch };
+  for (const k of Object.keys(d)) if (d[k] === undefined) delete d[k];
+  if ("session" in d && d.session === plannedIdx(iso)) delete d.session;
+  if (!("session" in d)) delete d.pair;
+  if (Object.keys(d).length) state.days[iso] = d;
+  else delete state.days[iso];
+}
+
+/** Переносит тренировку; если в тот день уже есть тренировка — они меняются местами. */
+function moveSession(from, to) {
+  const a = sessionIdxOn(from), b = sessionIdxOn(to);
+  setDay(to, { session: a, status: undefined, pair: from });
+  setDay(from, { session: b, status: undefined, pair: to });
+}
+
+/** Возвращает день как по плану — и тот день, с которым он поменялся. */
+function resetDay(iso) {
+  const pair = state.days[iso] && state.days[iso].pair;
+  setDay(iso, { session: undefined });
+  if (pair && state.days[pair] && state.days[pair].pair === iso) setDay(pair, { session: undefined });
+}
+
+function markDay(iso, status) {
+  const d = state.days[iso] || {};
+  if (d.status === status) { setDay(iso, { status: undefined, name: undefined, key: undefined }); return; }
+  const s = state.plan.sessions[sessionIdxOn(iso)];
+  setDay(iso, status === "done" && s ? { status, name: s.name, key: s.key } : { status, name: undefined, key: undefined });
+}
+
+/** Состояние дня для календаря. */
+function dayState(iso, today) {
+  const d = state.days[iso] || {};
+  const idx = sessionIdxOn(iso);
+  const session = idx == null ? null : state.plan.sessions[idx];
+  let status = "rest";
+  if (d.status === "done") status = "done";
+  else if (session && d.status === "skipped") status = "skipped";
+  else if (session) status = iso < today ? "missed" : "planned";
+  const theme = status === "done" && d.key ? themeOf({ key: d.key }) : session ? themeOf(session) : "";
+  return { idx, session, status, theme, moved: "session" in d, name: d.name || (session && session.name) };
+}
+
+// Старые переносы ссылаются на номера тренировок прошлого плана — при новом плане сбрасываем их с сегодняшнего дня
+function dropFutureMoves() {
+  const today = todayIso();
+  for (const iso of Object.keys(state.days)) {
+    if (iso >= today && "session" in state.days[iso]) setDay(iso, { session: undefined });
+  }
+}
+
+// ---------- Экран «Календарь» ----------
+
+const cal = { month: null, sel: null, mode: null };   // mode: "move" | "add" | null
+
+function renderCalendar() {
+  const today = todayIso();
+  if (!cal.month) { const n = new Date(); cal.month = new Date(n.getFullYear(), n.getMonth(), 1); }
+  if (!cal.sel) cal.sel = today;
+  const y = cal.month.getFullYear(), m = cal.month.getMonth();
+  const first = addDays(cal.month, -weekdayIndex(cal.month));
+  const last = new Date(y, m + 1, 0);
+
+  const stats = { done: 0, missed: 0, planned: 0 };
+  let weeks = "";
+  for (let start = first; start <= last; start = addDays(start, 7)) {
+    const deload = isoDate(addDays(start, 6)) >= state.plan.startDate && cycleWeek(state.plan, start) === CYCLE_WEEKS;
+    let cells = "";
+    for (let i = 0; i < 7; i++) {
+      const date = addDays(start, i);
+      const iso = isoDate(date);
+      const inMonth = date.getMonth() === m;
+      const ds = dayState(iso, today);
+      if (inMonth) {
+        if (ds.status === "done") stats.done++;
+        else if (ds.status === "missed" || ds.status === "skipped") stats.missed++;
+        else if (ds.status === "planned") stats.planned++;
+      }
+      const cls = ["cd", ds.status, inMonth ? "" : "out", iso === today ? "today" : "", iso === cal.sel ? "sel" : "", ds.moved ? "moved" : ""].join(" ");
+      cells += `<button type="button" class="${cls}" data-day="${iso}" style="${ds.theme}"><span>${date.getDate()}</span></button>`;
+    }
+    weeks += `<div class="cal-week ${deload ? "deload" : ""}">${cells}</div>`;
+  }
+
+  app.innerHTML = `
+    <header class="large-title"><small>Неделя ${cycleWeek(state.plan)} из ${CYCLE_WEEKS}</small><h1>Календарь</h1></header>
+
+    <section class="card cal-card rise">
+      <div class="cal-nav">
+        <button type="button" data-cal-shift="-1" aria-label="Предыдущий месяц">‹</button>
+        <b>${MONTHS[m]} ${y}</b>
+        <button type="button" data-cal-shift="1" aria-label="Следующий месяц">›</button>
+      </div>
+      <div class="cal-head">${WEEKDAYS.map((d) => `<span>${d}</span>`).join("")}</div>
+      <div class="cal-grid" id="cal-grid">${weeks}</div>
+      <div class="cal-legend">
+        <span><i class="lg done"></i>Сделано</span>
+        <span><i class="lg planned"></i>Впереди</span>
+        <span><i class="lg missed"></i>Пропуск</span>
+        <span><i class="lg deload"></i>Разгрузка</span>
+      </div>
+    </section>
+
+    <div class="cal-stats rise">
+      <div><b>${stats.done}</b><span>сделано</span></div>
+      <div><b>${stats.missed}</b><span>пропущено</span></div>
+      <div><b>${stats.planned}</b><span>впереди</span></div>
+    </div>
+
+    ${dayCard(cal.sel, today)}`;
+}
+
+function dayCard(iso, today) {
+  const date = fromIso(iso);
+  const ds = dayState(iso, today);
+  const diff = Math.round((date - fromIso(today)) / 86400000);
+  const when = diff === 0 ? "Сегодня" : diff === 1 ? "Завтра" : diff === -1 ? "Вчера" : diff < 0 ? "Прошедший день" : `Через ${diff} дн.`;
+  const started = isoDate(addDays(date, 6 - weekdayIndex(date))) >= state.plan.startDate;
+  const week = started ? cycleWeek(state.plan, date) : null;
+  const weekLabel = week ? (week === CYCLE_WEEKS ? " · разгрузочная неделя" : ` · неделя ${week} из ${CYCLE_WEEKS}`) : "";
+  const future = iso >= today;
+  const STATUS = { done: "✓ Выполнена", skipped: "Пропущена", missed: "Не отмечена", planned: "По плану" };
+
+  let body;
+  if (ds.session || ds.status === "done") {
+    const s = ds.session;
+    body = `
+      <div class="day-session" style="${ds.theme}">
+        <i></i>
+        <div><b>${esc(ds.name)}</b><small>${s ? `${esc(s.focus)} · ~${sessionMinutes(s.items)} мин` : "Выполнена"}</small></div>
+        <span class="tag ${ds.status}">${STATUS[ds.status]}${ds.moved ? " · перенесена" : ""}</span>
+      </div>
+      ${s ? `<details class="day-ex"><summary>Упражнения (${s.items.length})</summary>${exerciseList(s.items, ds.idx)}</details>` : ""}
+      <div class="day-actions">
+        ${iso <= today && s ? `
+          <button type="button" class="act ${ds.status === "done" ? "on done" : ""}" data-mark="done">✓ Выполнена</button>
+          <button type="button" class="act ${ds.status === "skipped" ? "on skipped" : ""}" data-mark="skipped">✕ Пропустил</button>` : ""}
+        ${s && ds.status !== "done" ? `<button type="button" class="act ${cal.mode === "move" ? "on" : ""}" data-mode="move">↪ Перенести</button>` : ""}
+        ${s && future && ds.status !== "done" ? `<button type="button" class="act" data-remove>Убрать</button>` : ""}
+        ${ds.status === "done" && !s ? `<button type="button" class="act on done" data-mark="done">✓ Снять отметку</button>` : ""}
+      </div>`;
+  } else {
+    body = `
+      <p class="day-rest">😌 День отдыха</p>
+      <div class="day-actions">
+        ${future ? `<button type="button" class="act ${cal.mode === "add" ? "on" : ""}" data-mode="add">＋ Добавить тренировку</button>` : ""}
+      </div>`;
+  }
+
+  let picker = "";
+  if (cal.mode === "move" && ds.session) {
+    const start = iso < today ? fromIso(today) : addDays(date, -3) < fromIso(today) ? fromIso(today) : addDays(date, -3);
+    const targets = Array.from({ length: 10 }, (_, i) => addDays(start, i)).filter((d) => isoDate(d) !== iso);
+    picker = `<p class="picker-hint">Куда перенести? Если там уже есть тренировка — они поменяются местами.</p>
+      <div class="picker">${targets.map((d) => {
+        const t = dayState(isoDate(d), today);
+        return `<button type="button" class="pick" data-move-to="${isoDate(d)}" style="${t.session ? themeOf(t.session) : ""}">
+          <small>${WEEKDAYS[weekdayIndex(d)]}</small><b>${d.getDate()}</b><i class="${t.session ? "busy" : ""}"></i>
+          <em>${t.session ? esc(t.session.name) : "свободно"}</em></button>`;
+      }).join("")}</div>`;
+  } else if (cal.mode === "add" && !ds.session) {
+    picker = `<p class="picker-hint">Какую тренировку поставить на этот день?</p>
+      ${state.plan.sessions.map((s, i) => `<button type="button" class="alt add-alt" data-add="${i}" style="${themeOf(s)}"><i></i><b>${esc(s.name)}</b><span>${esc(s.focus)}</span></button>`).join("")}`;
+  }
+
+  return `
+    <section class="card day-card rise">
+      <div class="eyebrow">${when}${weekLabel}</div>
+      <h2>${esc(longDay(date))}</h2>
+      ${body}
+      ${picker}
+      ${ds.moved && future ? `<button type="button" class="btn danger" data-reset-day>Вернуть как по плану</button>` : ""}
+    </section>`;
+}
+
+function calendarClick(e) {
+  const day = e.target.closest("[data-day]");
+  if (day) {
+    const iso = day.dataset.day;
+    cal.sel = iso;
+    cal.mode = null;
+    const d = fromIso(iso);
+    if (d.getMonth() !== cal.month.getMonth()) cal.month = new Date(d.getFullYear(), d.getMonth(), 1);
+    renderCalendar();
+    return true;
+  }
+  const shift = e.target.closest("[data-cal-shift]");
+  if (shift) { shiftMonth(Number(shift.dataset.calShift)); return true; }
+  const mark = e.target.closest("[data-mark]");
+  if (mark) {
+    markDay(cal.sel, mark.dataset.mark);
+    persist(); cal.mode = null; renderCalendar();
+    if (state.days[cal.sel] && state.days[cal.sel].status === "done") toast("Отмечено 💪");
+    return true;
+  }
+  const mode = e.target.closest("[data-mode]");
+  if (mode) { cal.mode = cal.mode === mode.dataset.mode ? null : mode.dataset.mode; renderCalendar(); return true; }
+  const to = e.target.closest("[data-move-to]");
+  if (to) {
+    const name = state.plan.sessions[sessionIdxOn(cal.sel)].name;
+    moveSession(cal.sel, to.dataset.moveTo);
+    persist();
+    cal.sel = to.dataset.moveTo; cal.mode = null;
+    const d = fromIso(cal.sel);
+    cal.month = new Date(d.getFullYear(), d.getMonth(), 1);
+    renderCalendar();
+    toast(`«${name}» → ${longDay(d).toLowerCase()}`);
+    return true;
+  }
+  const add = e.target.closest("[data-add]");
+  if (add) { setDay(cal.sel, { session: Number(add.dataset.add) }); persist(); cal.mode = null; renderCalendar(); return true; }
+  if (e.target.closest("[data-remove]")) {
+    if (!confirm("Убрать тренировку с этого дня? Она не перенесётся на другой день.")) return true;
+    setDay(cal.sel, { session: null, status: undefined }); persist(); cal.mode = null; renderCalendar(); return true;
+  }
+  if (e.target.closest("[data-reset-day]")) { resetDay(cal.sel); persist(); cal.mode = null; renderCalendar(); return true; }
+  return false;
+}
+
+function shiftMonth(n) {
+  cal.month = new Date(cal.month.getFullYear(), cal.month.getMonth() + n, 1);
+  cal.mode = null;
+  renderCalendar();
+}
+
+// Свайп по месяцу — листать месяцы
+let touchX = null;
+app.addEventListener("touchstart", (e) => { touchX = e.target.closest("#cal-grid") ? e.touches[0].clientX : null; }, { passive: true });
+app.addEventListener("touchend", (e) => {
+  if (touchX == null) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  touchX = null;
+  if (Math.abs(dx) > 60) shiftMonth(dx < 0 ? 1 : -1);
+}, { passive: true });
+
 // ---------- Пока не готовые экраны ----------
 
 function renderPlaceholder(emoji, title, text) {
@@ -472,7 +751,7 @@ function openExercise(ref) {
   const session = light ? null : state.plan.sessions[Number(sIdx)];
   let item;
   if (light) {
-    const w = workoutFor(state.plan, sessionForDay(weekdayIndex(new Date())), 1, "red");
+    const w = workoutFor(state.plan, sessionOn(new Date()), 1, "red");
     item = w.items[Number(iIdx)];
   } else {
     item = session.items[Number(iIdx)];
@@ -529,6 +808,7 @@ sheet.addEventListener("click", (e) => {
 
 app.addEventListener("click", (e) => {
   if (!state.profile || app.querySelector(".onb")) return;
+  if (view === "calendar" && calendarClick(e)) return;
   const ex = e.target.closest("[data-ex]");
   if (ex) { openExercise(ex.dataset.ex); return; }
   const rec = e.target.closest("[data-rec]");
@@ -537,6 +817,18 @@ app.addEventListener("click", (e) => {
   if (goto) {
     const card = document.getElementById("days").children[Number(goto.dataset.goto)];
     card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    return;
+  }
+  if (e.target.closest("[data-today-done]")) {
+    markDay(todayIso(), "done");
+    persist(); render();
+    if (state.days[todayIso()]) toast("Отмечено в календаре 💪");
+    return;
+  }
+  if (e.target.closest("[data-today-move]")) {
+    view = "calendar";
+    cal.sel = todayIso(); cal.mode = "move"; cal.month = null;
+    render();
     return;
   }
   if (e.target.closest("[data-start]")) { toast("Запись подходов и весов появится на шаге 3 🙂"); return; }
@@ -584,7 +876,7 @@ function render() {
   app.classList.remove("no-tabbar");
   if (view === "today") renderToday();
   else if (view === "plan") renderPlan();
-  else if (view === "calendar") renderPlaceholder("📅", "Календарь", "Появится на шаге 2: месяц с отметками тренировок, переносы и пропуски.");
+  else if (view === "calendar") renderCalendar();
   else if (view === "progress") renderPlaceholder("📈", "Успехи", "Появятся на шаге 4: серия, графики силы и веса тела, рекорды и достижения.");
   renderTabbar();
 }
