@@ -143,6 +143,7 @@ function renderOnboarding() {
           <div><span>📈</span>Веса растут по циклу из 6 недель</div>
         </div>
         <button class="btn" data-next>Начать</button>
+        <button class="btn link" data-restore>Есть копия? Восстановить данные</button>
       </section>`;
     return;
   }
@@ -406,7 +407,8 @@ function renderToday() {
   app.innerHTML = `
     <header class="large-title"><small>${esc(dateLabel)}</small><h1>${greeting(now)}</h1></header>
     ${recoveryCard}
-    ${workoutCard}`;
+    ${workoutCard}
+    ${backupDue() ? `<button type="button" class="card backup-nudge rise" data-backup><span>💾</span><div><b>Сохрани копию данных</b><small>${state.lastBackup ? "Последней копии больше 2 недель" : "Тренировки хранятся только в телефоне"}</small></div><i>›</i></button>` : ""}`;
 }
 
 function setRecovery(level, pct = null) {
@@ -468,6 +470,14 @@ function renderPlan() {
     <div class="dots" id="dots">${order.map((_, i) => `<i class="${i === first ? "on" : ""}"></i>`).join("")}</div>
 
     <button type="button" class="btn secondary" data-redo>Изменить анкету и пересобрать план</button>
+
+    <h3 class="section-title">Мои данные</h3>
+    <section class="card backup-card">
+      <p>Все тренировки хранятся только в этом телефоне. Сохраняй копию в «Файлы» или iCloud — если удалить приложение или сменить телефон, из неё всё восстановится.</p>
+      <p class="backup-when">${state.lastBackup ? `Последняя копия: ${new Date(state.lastBackup).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}` : "Копию ещё не сохраняли"}</p>
+      <button type="button" class="btn" data-backup>Сохранить копию</button>
+      <button type="button" class="btn secondary" data-restore>Восстановить из копии</button>
+    </section>
     <p class="hint-center">Листай тренировки вбок. Нажми на упражнение — техника и замена.</p>`;
 
   const scroller = document.getElementById("days");
@@ -1119,6 +1129,85 @@ if (state.profile && !state.profile.excluded) {
   if (state.plan) DEFAULT_EXCLUDED.forEach(excludeExercise);
   persist();
 }
+
+// ---------- Резервная копия ----------
+
+const BACKUP_EVERY_DAYS = 14;
+
+/** 1 тренировка, 2 тренировки, 5 тренировок. */
+function plural(n, one, few, many) {
+  const d = n % 10, dd = n % 100;
+  return d === 1 && dd !== 11 ? one : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? few : many;
+}
+
+/** Пора ли напомнить о копии: есть записанные тренировки, а копии нет или она старше 2 недель. */
+function backupDue() {
+  if (!state.logs.length) return false;
+  return !state.lastBackup || Date.now() - new Date(state.lastBackup) > BACKUP_EVERY_DAYS * 86400000;
+}
+
+async function exportBackup() {
+  state.lastBackup = new Date().toISOString();
+  const data = { app: "workout-app", version: 1, savedAt: state.lastBackup, state };
+  const name = `workout-backup-${todayIso()}.json`;
+  const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+  const file = new File([blob], name, { type: "application/json" });
+  try {
+    // На iPhone откроется меню «Поделиться» → «Сохранить в Файлы»
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+  } catch (e) {
+    if (e.name === "AbortError") { state.lastBackup = null; return; }  // передумал сохранять
+    toast("Не получилось сохранить копию");
+    return;
+  }
+  persist();
+  render();
+  toast("Копия сохранена 💾");
+}
+
+const fileInput = Object.assign(document.createElement("input"), { type: "file", accept: ".json,application/json", hidden: true });
+document.body.appendChild(fileInput);
+
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files[0];
+  fileInput.value = "";
+  if (!file) return;
+  let data;
+  try { data = JSON.parse(await file.text()); } catch (e) { data = null; }
+  if (!data || data.app !== "workout-app" || !data.state || !data.state.profile || !data.state.plan) {
+    toast("Это не копия из приложения «Тренировки»");
+    return;
+  }
+  const when = new Date(data.savedAt).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  const count = (data.state.logs || []).length;
+  if (!confirm(`Восстановить копию от ${when}? В ней ${count} ${plural(count, "записанная тренировка", "записанные тренировки", "записанных тренировок")}. Текущие данные в телефоне заменятся.`)) return;
+  state = { ...store.blank(), ...data.state };
+  persist();
+  view = state.active ? "workout" : "today";
+  render();
+  window.scrollTo(0, 0);
+  toast("Данные восстановлены ✅");
+});
+
+// Кнопки копии есть и на приветствии (там своя обработка кликов), поэтому слушаем весь документ
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-backup]")) exportBackup();
+  else if (e.target.closest("[data-restore]")) fileInput.click();
+});
+
+// ---------- Офлайн-режим ----------
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+// Просим браузер не удалять данные приложения, даже если места мало
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 // ---------- Главная отрисовка ----------
 

@@ -691,6 +691,20 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .confetti i:nth-child(14) { left: 94%; animation-delay: 0.36s; }
 @keyframes fall { to { transform: translateY(220px) rotate(540deg); opacity: 0; } }
 
+/* ---------- Резервная копия ---------- */
+
+.backup-card p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.45; }
+.backup-card .backup-when { margin-top: 10px; font-weight: 700; color: var(--text); }
+.backup-card .btn { margin-top: 12px; }
+.backup-card .btn.secondary { background: var(--surface); box-shadow: none; }
+.backup-nudge { display: flex; align-items: center; gap: 14px; width: 100%; margin-top: 14px; border: 0; text-align: left; font: inherit; color: inherit; }
+.backup-nudge > span { font-size: 28px; }
+.backup-nudge div { flex: 1; }
+.backup-nudge b { display: block; font-size: 16px; }
+.backup-nudge small { color: var(--muted); font-size: 13px; }
+.backup-nudge i { font-style: normal; color: var(--faint); font-size: 22px; }
+.btn.link { background: none !important; box-shadow: none !important; color: var(--text); font-size: 15px; margin-top: 6px; }
+
 .toast {
   position: fixed;
   left: 50%;

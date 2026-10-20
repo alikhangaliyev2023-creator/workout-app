@@ -15,6 +15,11 @@ export function load() {
   }
 }
 
+/** Пустые данные — основа для загрузки и для восстановления из копии. */
+export function blank() {
+  return structuredClone(EMPTY);
+}
+
 export function save(state) {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
