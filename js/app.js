@@ -6,7 +6,8 @@ import {
   SPLIT_OPTIONS, cycleWeek, generatePlan, isoDate, splitFor, profileSummary, recoveryLevel, sessionMinutes, weekNote, weekdayIndex, workoutFor,
 } from "./plan.js";
 import * as store from "./store.js";
-import { fmt, lastFor, newWorkout, suggestion, summarize, toLog } from "./workout.js";
+import { fmt, lastFor, newWorkout, parseNum, suggestion, summarize, toLog } from "./workout.js";
+import { badges, bestLift, goalProgress, latestWeight, liftSeries, liftedExercises, stats, unlockedIds, weeks } from "./progress.js";
 
 const app = document.getElementById("app");
 const tabbar = document.getElementById("tabbar");
@@ -921,9 +922,11 @@ function finishWorkout() {
   const left = a.items.reduce((n, it) => n + it.sets.filter((s) => !s.done).length, 0);
   if (left && !confirm(`Осталось ${left} подх. — всё равно завершить?`)) return;
   const log = toLog(a);
+  const before = unlockedIds(stats(progressCtx()));
   lastSummary = { ...summarize(log, state.logs), name: a.name, key: a.key, light: a.light };
   state.logs.push(log);
   setDay(a.date, { status: "done", name: a.name, key: a.key });
+  lastSummary.badges = badges(stats(progressCtx())).filter((b) => b.done && !before.includes(b.id));
   state.active = null;
   persist();
   keepAwake(false);
@@ -951,6 +954,8 @@ function renderSummary() {
       </div>
       ${s.records.length ? `<h3 class="section-title">Новые рекорды</h3>
         <section class="card">${s.records.map((r) => `<div class="record"><span>🏅 ${esc(BY_ID[r.exercise].name)}</span><b>${fmt(r.weight)} кг <small>было ${fmt(r.was)}</small></b></div>`).join("")}</section>` : ""}
+      ${s.badges && s.badges.length ? `<h3 class="section-title">Новые достижения</h3>
+        <div class="badges">${s.badges.map((b) => `<div class="badge done pop"><span>${b.emoji}</span><b>${esc(b.title)}</b><small>${esc(b.desc)}</small></div>`).join("")}</div>` : ""}
       <button type="button" class="btn" data-sum-close>Готово</button>
     </section>`;
 }
@@ -994,10 +999,214 @@ app.addEventListener("input", (e) => {
   persist();
 });
 
-// ---------- Пока не готовые экраны ----------
+// ---------- Экран «Успехи» ----------
 
-function renderPlaceholder(emoji, title, text) {
-  app.innerHTML = `<section class="placeholder"><div class="emoji">${emoji}</div><h2>${title}</h2><p>${text}</p></section>`;
+/** Данные для подсчёта успехов. На неделю план — сколько тренировок стоит в календаре. */
+function progressCtx() {
+  return {
+    logs: state.logs, days: state.days, body: state.body, goals: state.goals,
+    weekTarget: (monday) => {
+      let n = 0;
+      for (let i = 0; i < 7; i++) if (sessionIdxOn(isoDate(addDays(monday, i))) != null) n++;
+      return n || state.plan.sessions.length;   // недели до начала плана — по числу тренировок в неделю
+    },
+  };
+}
+
+const prog = { ex: null };
+const shortDate = (iso) => { const [, m, d] = iso.split("-"); return `${Number(d)}.${m}`; };
+const kgLabel = (kg) => (kg >= 1000 ? `${fmt(Math.round(kg / 100) / 10)} т` : `${fmt(Math.round(kg))} кг`);
+
+/** Линейный график: точки [{ date, value }]. */
+function lineChart(points, unit) {
+  if (points.length < 2) {
+    return `<div class="chart-empty">${points.length ? `Пока одна запись: <b>${fmt(points[0].value)} ${unit}</b>. После следующей появится график.` : "Пока нет записей"}</div>`;
+  }
+  const W = 320, H = 150, P = 14;
+  const values = points.map((p) => p.value);
+  let lo = Math.min(...values), hi = Math.max(...values);
+  if (hi - lo < 1) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.15;
+  lo -= pad; hi += pad;
+  const x = (i) => P + (i * (W - 2 * P)) / (points.length - 1);
+  const y = (v) => H - P - ((v - lo) * (H - 2 * P)) / (hi - lo);
+  const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${H} L${x(0).toFixed(1)},${H} Z`;
+  const lastP = points[points.length - 1];
+  const change = lastP.value - points[0].value;
+  return `
+    <svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".25"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+      <path d="${area}" fill="url(#cg)"/>
+      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div class="chart-dots">${points.map((p, i) => `<i style="left:${(x(i) / W) * 100}%;top:${(y(p.value) / H) * 100}%"></i>`).join("")}</div>
+    <div class="chart-foot"><span>${shortDate(points[0].date)}</span>
+      <b class="${change > 0 ? "up" : change < 0 ? "down" : ""}">${change > 0 ? "+" : ""}${fmt(change)} ${unit}</b>
+      <span>${shortDate(lastP.date)}</span></div>`;
+}
+
+function renderProgress() {
+  const ctx = progressCtx();
+  const st = stats(ctx);
+  // Недели до начала плана без тренировок — пустые, а не «пропущенные»
+  const list = weeks(ctx, 8).map((w) => ({ ...w, before: !w.done && isoDate(addDays(w.monday, 6)) < state.plan.startDate }));
+  const lifts = liftedExercises(state.logs);
+  if (!prog.ex || !lifts.some((l) => l.id === prog.ex)) prog.ex = lifts[0] ? lifts[0].id : null;
+  const allBadges = badges(st);
+  const unlocked = allBadges.filter((b) => b.done).length;
+  const weight = latestWeight(state.body);
+
+  const goals = state.goals.map((g, i) => {
+    const pr = goalProgress(g, ctx);
+    const title = g.type === "lift" ? `${BY_ID[g.exercise].name}` : "Вес тела";
+    const now = pr.current == null ? "нет записей" : `сейчас ${fmt(pr.current)} кг`;
+    const left = pr.current == null ? "" : ` · осталось ${fmt(Math.abs(g.target - pr.current))} кг`;
+    return `<div class="goal ${pr.done ? "done" : ""}">
+      <div class="goal-top"><span>${g.type === "lift" ? "🏋️" : "⚖️"}</span>
+        <div><b>${esc(title)} — ${fmt(g.target)} кг</b><small>${pr.done ? "✓ Цель достигнута!" : now + left}</small></div>
+        <button type="button" class="goal-del" data-goal-del="${i}" aria-label="Удалить цель">×</button></div>
+      <div class="goal-bar"><i style="width:${Math.round(pr.pct * 100)}%"></i></div>
+    </div>`;
+  }).join("");
+
+  app.innerHTML = `
+    <header class="large-title"><small>${st.workouts} ${plural(st.workouts, "тренировка", "тренировки", "тренировок")} всего</small><h1>Успехи</h1></header>
+
+    <section class="card streak-card rise">
+      <div class="streak-fire">🔥</div>
+      <div><b>${st.streak}</b><span>${plural(st.streak, "неделя", "недели", "недель")} подряд без пропусков</span>
+        <small>Лучшая серия: ${st.bestStreak}</small></div>
+    </section>
+
+    <div class="cal-stats rise">
+      <div><b>${st.workouts}</b><span>тренировок</span></div>
+      <div><b>${kgLabel(st.tonnage)}</b><span>поднято</span></div>
+      <div><b>${st.records}</b><span>рекордов</span></div>
+    </div>
+
+    <h3 class="section-title">Последние 8 недель</h3>
+    <section class="card rise">
+      <div class="week-bars">${list.map((w) => `
+        <div class="${w.full ? "full" : ""} ${w.current ? "now" : ""} ${w.before ? "before" : ""}">
+          <div class="bar"><i style="height:${Math.min(100, (w.done / w.target) * 100)}%"></i></div>
+          <b>${w.before ? "—" : `${w.done}/${w.target}`}</b><span>${w.current ? "эта" : shortDate(isoDate(w.monday))}</span>
+        </div>`).join("")}</div>
+    </section>
+
+    <h3 class="section-title">Мои цели</h3>
+    <section class="card rise">
+      ${goals || '<p class="muted small">Поставь цель — например, «жим лёжа 100 кг» или «вес тела 78 кг» — и следи, сколько осталось.</p>'}
+      <button type="button" class="btn secondary add-goal" data-goal-new>＋ Новая цель</button>
+    </section>
+
+    <h3 class="section-title">Сила</h3>
+    <section class="card rise">
+      ${lifts.length ? `
+        <div class="lift-chips">${lifts.map((l) => `<button type="button" class="chip ${l.id === prog.ex ? "active" : ""}" data-lift="${l.id}">${esc(BY_ID[l.id].name)}</button>`).join("")}</div>
+        <div class="lift-best"><span>Лучший вес</span><b>${fmt(bestLift(state.logs, prog.ex))} кг</b></div>
+        <div class="chart-wrap">${lineChart(liftSeries(state.logs, prog.ex), "кг")}</div>`
+      : '<p class="muted small">Запиши первую тренировку с весами — тут появятся графики силы по каждому упражнению.</p>'}
+    </section>
+
+    <h3 class="section-title">Вес тела</h3>
+    <section class="card rise">
+      <div class="body-row">
+        <div><span>Сейчас</span><b>${weight != null ? fmt(weight) + " кг" : "—"}</b></div>
+        <input class="wk-in" id="body-in" inputmode="decimal" placeholder="${weight != null ? fmt(weight) : "кг"}" aria-label="Вес тела, кг">
+        <button type="button" class="btn" data-body-save>Записать</button>
+      </div>
+      <p class="muted small">Взвешивайся раз в неделю утром натощак — так цифры честнее.</p>
+      ${state.body.length ? `<div class="chart-wrap">${lineChart(state.body.map((b) => ({ date: b.date, value: b.weight })), "кг")}</div>` : ""}
+    </section>
+
+    <h3 class="section-title">Достижения · ${unlocked} из ${allBadges.length}</h3>
+    <div class="badges rise">${allBadges.map((b) => `
+      <div class="badge ${b.done ? "done" : ""}">
+        <span>${b.emoji}</span><b>${esc(b.title)}</b><small>${esc(b.desc)}</small>
+        ${b.done ? "" : `<div class="goal-bar"><i style="width:${Math.min(100, (b.have / b.need) * 100)}%"></i></div>`}
+      </div>`).join("")}</div>`;
+}
+
+// Шторка «Новая цель»
+const goalDraft = { type: "lift" };
+
+function openGoalSheet() {
+  const exercises = [...new Set([...state.plan.sessions.flatMap((s) => s.items.filter((it) => !it.cardio && it.unit !== "сек").map((it) => it.exercise)), ...liftedExercises(state.logs).map((l) => l.id)])];
+  if (!goalDraft.exercise || !exercises.includes(goalDraft.exercise)) goalDraft.exercise = exercises[0];
+  const best = bestLift(state.logs, goalDraft.exercise);
+  const weight = latestWeight(state.body);
+  sheet.innerHTML = `
+    <div class="sheet" role="dialog" aria-label="Новая цель">
+      <div class="sheet-grip"></div>
+      <h2>Новая цель</h2>
+      <div class="seg">
+        <button type="button" class="${goalDraft.type === "lift" ? "on" : ""}" data-goal-type="lift">🏋️ Вес в упражнении</button>
+        <button type="button" class="${goalDraft.type === "body" ? "on" : ""}" data-goal-type="body">⚖️ Вес тела</button>
+      </div>
+      ${goalDraft.type === "lift" ? `
+        <label class="field"><span>Упражнение</span>
+          <select id="goal-ex">${exercises.map((id) => `<option value="${id}" ${id === goalDraft.exercise ? "selected" : ""}>${esc(BY_ID[id].name)}</option>`).join("")}</select></label>
+        <p class="muted small">${best ? `Твой лучший вес сейчас: ${fmt(best)} кг` : "Записей с этим упражнением пока нет"}</p>`
+      : `<p class="muted small">${weight != null ? `Последний вес: ${fmt(weight)} кг` : "Сначала запиши текущий вес на экране «Успехи» — от него будет считаться прогресс."}</p>`}
+      <label class="field"><span>Цель, кг</span><input id="goal-target" inputmode="decimal" placeholder="${goalDraft.type === "lift" ? (best ? fmt(best + 10) : "100") : weight != null ? fmt(weight - 4) : "78"}"></label>
+      <button type="button" class="btn" data-goal-save>Поставить цель</button>
+      <button type="button" class="btn secondary" data-close>Отмена</button>
+    </div>`;
+  sheet.hidden = false;
+}
+
+function goalSheetClick(e) {
+  const type = e.target.closest("[data-goal-type]");
+  if (type) { goalDraft.type = type.dataset.goalType; openGoalSheet(); return true; }
+  if (!e.target.closest("[data-goal-save]")) return false;
+  const target = parseNum(document.getElementById("goal-target").value);
+  if (!target || target <= 0) { toast("Введи цель в килограммах"); return true; }
+  if (goalDraft.type === "lift") {
+    const exercise = document.getElementById("goal-ex").value;
+    state.goals.push({ type: "lift", exercise, target, from: bestLift(state.logs, exercise), createdAt: todayIso() });
+  } else {
+    const from = latestWeight(state.body);
+    if (from == null) { toast("Сначала запиши текущий вес тела"); return true; }
+    state.goals.push({ type: "body", target, from, createdAt: todayIso() });
+  }
+  persist();
+  sheet.hidden = true;
+  render();
+  toast("Цель поставлена 🎯");
+  return true;
+}
+sheet.addEventListener("change", (e) => {
+  if (e.target.id === "goal-ex") { goalDraft.exercise = e.target.value; openGoalSheet(); }
+});
+
+function progressClick(e) {
+  const lift = e.target.closest("[data-lift]");
+  if (lift) { prog.ex = lift.dataset.lift; const y = window.scrollY; renderProgress(); window.scrollTo(0, y); return true; }
+  if (e.target.closest("[data-goal-new]")) { openGoalSheet(); return true; }
+  const del = e.target.closest("[data-goal-del]");
+  if (del) {
+    if (!confirm("Удалить эту цель?")) return true;
+    state.goals.splice(Number(del.dataset.goalDel), 1);
+    persist(); const y = window.scrollY; renderProgress(); window.scrollTo(0, y);
+    return true;
+  }
+  if (e.target.closest("[data-body-save]")) {
+    const w = parseNum(document.getElementById("body-in").value);
+    if (!w || w < 30 || w > 300) { toast("Введи вес в килограммах"); return true; }
+    const today = todayIso();
+    state.body = state.body.filter((b) => b.date !== today).concat({ date: today, weight: w }).sort((a, b) => (a.date < b.date ? -1 : 1));
+    persist(); const y = window.scrollY; renderProgress(); window.scrollTo(0, y);
+    toast("Вес записан ⚖️");
+    return true;
+  }
+  return false;
+}
+
+// Вес из анкеты — первая точка на графике веса тела
+if (state.profile && state.plan && !state.body.length && state.profile.weight) {
+  state.body.push({ date: state.plan.createdAt.slice(0, 10), weight: state.profile.weight });
+  persist();
 }
 
 // ---------- Шторка с упражнением ----------
@@ -1039,6 +1248,7 @@ function openExercise(ref) {
 
 sheet.addEventListener("click", (e) => {
   if (e.target === sheet || e.target.closest("[data-close]")) { sheet.hidden = true; return; }
+  if (goalSheetClick(e)) return;
   const exclude = e.target.closest("[data-exclude]");
   if (exclude) {
     const name = BY_ID[exclude.dataset.exclude].name;
@@ -1069,6 +1279,7 @@ app.addEventListener("click", (e) => {
   if (!state.profile || app.querySelector(".onb")) return;
   if (view === "calendar" && calendarClick(e)) return;
   if (view === "workout" && workoutClick(e)) return;
+  if (view === "progress" && progressClick(e)) return;
   const ex = e.target.closest("[data-ex]");
   if (ex) { openExercise(ex.dataset.ex); return; }
   const rec = e.target.closest("[data-rec]");
@@ -1219,7 +1430,7 @@ function render() {
   if (view === "today") renderToday();
   else if (view === "plan") renderPlan();
   else if (view === "calendar") renderCalendar();
-  else if (view === "progress") renderPlaceholder("📈", "Успехи", "Появятся на шаге 4: серия, графики силы и веса тела, рекорды и достижения.");
+  else if (view === "progress") renderProgress();
   renderTabbar();
 }
 

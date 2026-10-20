@@ -3,8 +3,9 @@
 const KEY = "workout-app";
 
 // days — отметки календаря по датам: переносы тренировок и «выполнена / пропущена»
-// logs — завершённые тренировки, active — тренировка, которая идёт прямо сейчас
-const EMPTY = { profile: null, plan: null, recovery: {}, days: {}, logs: [], active: null };
+// logs — завершённые тренировки, active — тренировка, которая идёт прямо сейчас,
+// body — записи веса тела, goals — свои цели
+const EMPTY = { profile: null, plan: null, recovery: {}, days: {}, logs: [], active: null, body: [], goals: [] };
 
 export function load() {
   try {

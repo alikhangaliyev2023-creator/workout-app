@@ -4,10 +4,10 @@
 // если сети нет или она тормозит больше 3 секунд — открываем сохранённую копию.
 // Шрифты Google — «сначала копия»: они не меняются.
 
-const CACHE = "workout-v1";
+const CACHE = "workout-v2";
 const FILES = [
   "./", "index.html", "manifest.webmanifest", "css/style.css",
-  "js/app.js", "js/exercises.js", "js/plan.js", "js/store.js", "js/workout.js",
+  "js/app.js", "js/exercises.js", "js/plan.js", "js/store.js", "js/workout.js", "js/progress.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png", "icons/favicon-32.png",
 ];
 
