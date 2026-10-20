@@ -6,6 +6,7 @@ import {
   SPLIT_OPTIONS, cycleWeek, generatePlan, isoDate, splitFor, profileSummary, recoveryLevel, sessionMinutes, weekNote, weekdayIndex, workoutFor,
 } from "./plan.js";
 import * as store from "./store.js";
+import { fmt, lastFor, newWorkout, suggestion, summarize, toLog } from "./workout.js";
 
 const app = document.getElementById("app");
 const tabbar = document.getElementById("tabbar");
@@ -307,6 +308,7 @@ function exerciseList(items, sessionIndex) {
 
 /** Цветная карточка тренировки: шапка в цветах мышц и список упражнений. */
 function sessionCard(w, ref, { kicker, start = false, note = "", extra = "" } = {}) {
+  const startLabel = state.active ? "Продолжить тренировку" : "Начать тренировку";
   return `
     <section class="card session rise" style="${themeOf(w)}">
       <div class="session-head">
@@ -322,11 +324,19 @@ function sessionCard(w, ref, { kicker, start = false, note = "", extra = "" } = 
       </div>
       <div class="session-body">
         ${exerciseList(w.items, ref)}
-        ${start ? `<button type="button" class="start-btn" data-start>${PLAY_ICON} Начать тренировку</button>` : ""}
+        ${start ? `<button type="button" class="start-btn" data-start>${PLAY_ICON} ${startLabel}</button>` : ""}
         ${extra}
         ${note ? `<p class="session-note">${note}</p>` : ""}
       </div>
     </section>`;
+}
+
+/** Плашка «тренировка засчитана» — с итогами, если подходы записаны в приложении. */
+function todayDone() {
+  const log = [...state.logs].reverse().find((l) => l.date === todayIso());
+  if (!log) return `<div class="today-done">🎉 Тренировка засчитана<button type="button" data-today-done>Снять</button></div>`;
+  const sum = summarize(log, state.logs.filter((l) => l !== log));
+  return `<div class="today-done">🎉 Засчитана · ${sum.minutes} мин · ${sum.sets} подх.</div>`;
 }
 
 function greeting(now) {
@@ -373,7 +383,7 @@ function renderToday() {
       kicker: done ? "Сегодня · выполнено ✓" : `Сегодня · неделя ${week} из ${CYCLE_WEEKS}`,
       start: !done,
       extra: done
-        ? `<div class="today-done">🎉 Тренировка засчитана<button type="button" data-today-done>Снять</button></div>`
+        ? todayDone()
         : `<div class="today-actions">
             <button type="button" class="act" data-today-done>✓ Уже сделал</button>
             <button type="button" class="act" data-today-move>↪ Перенести</button>
@@ -737,6 +747,243 @@ app.addEventListener("touchend", (e) => {
   if (Math.abs(dx) > 60) shiftMonth(dx < 0 ? 1 : -1);
 }, { passive: true });
 
+// ---------- Тренировка: запись подходов и таймер отдыха ----------
+
+let audio = null;     // звук окончания отдыха (на iPhone его можно включить только по нажатию)
+let wakeLock = null;  // чтобы экран не гас во время тренировки
+let lastSummary = null;
+
+function unlockAudio() {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    audio.resume();
+  } catch (e) { audio = null; }
+}
+function beep() {
+  if (!audio) return;
+  [0, 0.25, 0.5].forEach((t) => {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.25, audio.currentTime + t);
+    g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + t + 0.18);
+    o.connect(g).connect(audio.destination);
+    o.start(audio.currentTime + t);
+    o.stop(audio.currentTime + t + 0.2);
+  });
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+}
+async function keepAwake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen");
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (e) { wakeLock = null; }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && view === "workout") { wakeLock = null; keepAwake(true); } });
+
+const clock = (sec) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec) % 60).padStart(2, "0")}`;
+
+function startWorkout() {
+  unlockAudio();
+  if (!state.active) {
+    const now = new Date();
+    const session = sessionOn(now);
+    if (!session) return;
+    const rec = state.recovery[todayIso()];
+    const w = workoutFor(state.plan, session, cycleWeek(state.plan), rec ? rec.level : null);
+    state.active = newWorkout(w, { date: todayIso(), sessionIdx: state.plan.sessions.indexOf(session) });
+    persist();
+  }
+  view = "workout";
+  render();
+  window.scrollTo(0, 0);
+}
+
+function renderWorkout() {
+  const a = state.active;
+  if (!a) { view = "today"; render(); return; }
+  tabbar.hidden = true;
+  app.classList.add("no-tabbar");
+  keepAwake(true);
+  const total = a.items.reduce((n, it) => n + it.sets.length, 0);
+  const done = a.items.reduce((n, it) => n + it.sets.filter((s) => s.done).length, 0);
+
+  const cards = a.items.map((it, i) => {
+    const ex = BY_ID[it.exercise];
+    const finished = it.sets.every((s) => s.done);
+    if (it.cardio) {
+      const s = it.sets[0];
+      return `<section class="card wk-ex ${finished ? "finished" : ""}">
+        <div class="wk-title"><span class="ex-num cardio">♥</span><button type="button" data-ex="${it.ref}"><b>${esc(ex.name)}</b><small>${it.minutes} мин, ровный темп</small></button></div>
+        <button type="button" class="wk-cardio ${s.done ? "done" : ""}" data-set="${i}:0">${s.done ? "✓ Сделано" : `Отметить ${it.minutes} мин`}</button>
+      </section>`;
+    }
+    const last = lastFor(state.logs, it.exercise);
+    const sug = suggestion(it, last);
+    const secs = it.unit === "сек";
+    const rows = it.sets.map((s, j) => {
+      const prev = last && last.sets[j];
+      // Подсказка веса: что ввёл в прошлом подходе сегодня → совет приложения → вес с прошлого раза
+      const before = j > 0 && it.sets[j - 1].w !== "" ? it.sets[j - 1].w : null;
+      const phW = before != null ? before : sug && sug.weight != null ? fmt(sug.weight) : prev && prev.w != null ? fmt(prev.w) : "";
+      const phR = prev && prev.r != null ? prev.r : it.reps[1];
+      return `<div class="wk-set ${s.done ? "done" : ""}">
+        <span class="wk-n">${j + 1}</span>
+        ${secs ? `<span class="wk-dash">—</span>` : `<input class="wk-in" inputmode="decimal" data-w="${i}:${j}" value="${esc(s.w)}" placeholder="${phW || "кг"}" aria-label="Вес, кг">`}
+        <input class="wk-in" inputmode="numeric" data-r="${i}:${j}" value="${esc(s.r)}" placeholder="${phR}" aria-label="${secs ? "Секунды" : "Повторы"}">
+        <button type="button" class="wk-check" data-set="${i}:${j}" aria-label="Подход сделан">✓</button>
+      </div>`;
+    }).join("");
+    return `<section class="card wk-ex ${finished ? "finished" : ""}" style="${themeOf(a.light ? { light: true } : { key: a.key })}">
+      <div class="wk-title"><span class="ex-num">${it.superset ? "+" : i + 1}</span>
+        <button type="button" data-ex="${it.ref}"><b>${esc(ex.name)}</b><small>${it.sets.length} × ${it.reps[0]}–${it.reps[1]}${secs ? " сек" : ""} · ${it.pairStart ? "суперсет ↓" : "отдых " + restLabel(it.rest)}</small></button></div>
+      ${last ? `<p class="wk-last">Прошлый раз: ${last.sets.map((s) => (s.w != null ? fmt(s.w) + "×" : "") + s.r).join(", ")}</p>` : ""}
+      ${sug ? `<p class="wk-hint">${sug.text}</p>` : ""}
+      <div class="wk-head"><span>#</span><span>${secs ? "" : "кг"}</span><span>${secs ? "сек" : "повт"}</span><span></span></div>
+      ${rows}
+      <button type="button" class="wk-add" data-add-set="${i}">＋ подход</button>
+    </section>`;
+  }).join("");
+
+  app.innerHTML = `
+    <div class="wk-top" style="${themeOf(a.light ? { light: true } : { key: a.key })}">
+      <button type="button" class="wk-back" data-wk-hide aria-label="Свернуть">‹</button>
+      <div class="wk-name"><b>${esc(a.name)}</b><small><span id="wk-elapsed">${clock(Math.floor((Date.now() - a.startedAt) / 1000))}</span> · ${done} из ${total} подх.</small></div>
+      <button type="button" class="wk-finish" data-wk-finish>Готово</button>
+      <div class="wk-progress"><i style="width:${total ? (done / total) * 100 : 0}%"></i></div>
+    </div>
+    ${cards}
+    <button type="button" class="btn danger" data-wk-cancel>Отменить тренировку</button>
+    <div class="rest-bar" id="rest-bar" hidden></div>`;
+  tick();
+}
+
+function tick() {
+  const a = state.active;
+  if (!a || view !== "workout") return;
+  const el = document.getElementById("wk-elapsed");
+  if (el) el.textContent = clock(Math.floor((Date.now() - a.startedAt) / 1000));
+  const bar = document.getElementById("rest-bar");
+  if (!bar) return;
+  if (!a.rest) { bar.hidden = true; return; }
+  const left = Math.ceil((a.rest.until - Date.now()) / 1000);
+  if (left <= 0 && !a.rest.rang) { a.rest.rang = true; persist(); beep(); }
+  if (left <= -60) { a.rest = null; persist(); bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.className = `rest-bar ${left <= 0 ? "go" : ""}`;
+  const pct = Math.max(0, Math.min(100, (left / a.rest.total) * 100));
+  bar.innerHTML = left > 0
+    ? `<div class="rest-fill" style="width:${pct}%"></div>
+       <button type="button" data-rest="-15">−15</button>
+       <div class="rest-mid"><small>Отдых</small><b>${clock(left)}</b></div>
+       <button type="button" data-rest="15">+15</button>
+       <button type="button" data-rest="skip" class="rest-skip">Дальше</button>`
+    : `<div class="rest-mid"><small>Отдых закончился</small><b>Следующий подход 💪</b></div>
+       <button type="button" data-rest="skip" class="rest-skip">OK</button>`;
+}
+setInterval(tick, 500);
+
+function setDone(i, j) {
+  const a = state.active;
+  const it = a.items[i];
+  const s = it.sets[j];
+  if (s.done) { s.done = false; persist(); renderWorkout(); return; }
+  // Пустые поля — берём подсказку (серый текст в поле)
+  const row = app.querySelector(`[data-set="${i}:${j}"]`).closest(".wk-set");
+  if (row) {
+    const wIn = row.querySelector("[data-w]"), rIn = row.querySelector("[data-r]");
+    if (wIn && s.w === "" && /\d/.test(wIn.placeholder)) s.w = wIn.placeholder;
+    if (rIn && s.r === "") s.r = rIn.placeholder;
+  }
+  s.done = true;
+  if (it.cardio) a.rest = null;
+  else if (it.pairStart) { a.rest = null; toast(`Суперсет: сразу ${BY_ID[a.items[i + 1].exercise].name}`); }
+  else a.rest = { until: Date.now() + it.rest * 1000, total: it.rest, rang: false };
+  persist();
+  const y = window.scrollY;
+  renderWorkout();
+  window.scrollTo(0, y);
+}
+
+function finishWorkout() {
+  const a = state.active;
+  const done = a.items.some((it) => it.sets.some((s) => s.done));
+  if (!done) { toast("Отметь хотя бы один подход ✓ — или отмени тренировку"); return; }
+  const left = a.items.reduce((n, it) => n + it.sets.filter((s) => !s.done).length, 0);
+  if (left && !confirm(`Осталось ${left} подх. — всё равно завершить?`)) return;
+  const log = toLog(a);
+  lastSummary = { ...summarize(log, state.logs), name: a.name, key: a.key, light: a.light };
+  state.logs.push(log);
+  setDay(a.date, { status: "done", name: a.name, key: a.key });
+  state.active = null;
+  persist();
+  keepAwake(false);
+  view = "summary";
+  render();
+  window.scrollTo(0, 0);
+}
+
+function renderSummary() {
+  tabbar.hidden = true;
+  app.classList.add("no-tabbar");
+  const s = lastSummary;
+  if (!s) { view = "today"; render(); return; }
+  const tons = s.volume >= 1000 ? `${fmt(Math.round(s.volume / 100) / 10)} т` : `${Math.round(s.volume)} кг`;
+  app.innerHTML = `
+    <section class="summary-screen" style="${themeOf(s.light ? { light: true } : { key: s.key })}">
+      <div class="confetti">${"<i></i>".repeat(14)}</div>
+      <div class="emoji">${s.records.length ? "🏆" : "🎉"}</div>
+      <h1>Тренировка готова!</h1>
+      <p class="hint">${esc(s.name)} · отмечено в календаре</p>
+      <div class="sum-grid">
+        <div><b>${s.minutes}</b><span>минут</span></div>
+        <div><b>${s.sets}</b><span>подходов</span></div>
+        <div><b>${tons}</b><span>поднято</span></div>
+      </div>
+      ${s.records.length ? `<h3 class="section-title">Новые рекорды</h3>
+        <section class="card">${s.records.map((r) => `<div class="record"><span>🏅 ${esc(BY_ID[r.exercise].name)}</span><b>${fmt(r.weight)} кг <small>было ${fmt(r.was)}</small></b></div>`).join("")}</section>` : ""}
+      <button type="button" class="btn" data-sum-close>Готово</button>
+    </section>`;
+}
+
+function workoutClick(e) {
+  const set = e.target.closest("[data-set]");
+  if (set) { const [i, j] = set.dataset.set.split(":").map(Number); setDone(i, j); return true; }
+  const add = e.target.closest("[data-add-set]");
+  if (add) {
+    const it = state.active.items[Number(add.dataset.addSet)];
+    it.sets.push({ w: "", r: "", done: false });
+    persist();
+    const y = window.scrollY; renderWorkout(); window.scrollTo(0, y);
+    return true;
+  }
+  const rest = e.target.closest("[data-rest]");
+  if (rest) {
+    const a = state.active;
+    if (rest.dataset.rest === "skip") a.rest = null;
+    else { a.rest.until += Number(rest.dataset.rest) * 1000; a.rest.rang = false; }
+    persist(); tick();
+    return true;
+  }
+  if (e.target.closest("[data-wk-hide]")) { view = "today"; keepAwake(false); render(); window.scrollTo(0, 0); return true; }
+  if (e.target.closest("[data-wk-finish]")) { finishWorkout(); return true; }
+  if (e.target.closest("[data-wk-cancel]")) {
+    if (!confirm("Отменить тренировку? Записанные подходы не сохранятся.")) return true;
+    state.active = null; persist(); keepAwake(false);
+    view = "today"; render(); window.scrollTo(0, 0);
+    return true;
+  }
+  return false;
+}
+
+// Вес и повторы сохраняем сразу, как только вводишь — без перерисовки экрана
+app.addEventListener("input", (e) => {
+  const key = e.target.dataset.w ? "w" : e.target.dataset.r ? "r" : null;
+  if (!key || !state.active) return;
+  const [i, j] = e.target.dataset[key].split(":").map(Number);
+  state.active.items[i].sets[j][key] = e.target.value.trim();
+  persist();
+});
+
 // ---------- Пока не готовые экраны ----------
 
 function renderPlaceholder(emoji, title, text) {
@@ -797,6 +1044,8 @@ sheet.addEventListener("click", (e) => {
   if (swap) {
     const [sIdx, iIdx, id] = swap.dataset.swap.split(":");
     state.plan.sessions[Number(sIdx)].items[Number(iIdx)].exercise = id;
+    const live = state.active && state.active.items.find((it) => it.ref === `${sIdx}:${iIdx}`);
+    if (live && !live.sets.some((s) => s.done)) live.exercise = id;
     persist();
     sheet.hidden = true;
     render();
@@ -809,6 +1058,7 @@ sheet.addEventListener("click", (e) => {
 app.addEventListener("click", (e) => {
   if (!state.profile || app.querySelector(".onb")) return;
   if (view === "calendar" && calendarClick(e)) return;
+  if (view === "workout" && workoutClick(e)) return;
   const ex = e.target.closest("[data-ex]");
   if (ex) { openExercise(ex.dataset.ex); return; }
   const rec = e.target.closest("[data-rec]");
@@ -831,7 +1081,8 @@ app.addEventListener("click", (e) => {
     render();
     return;
   }
-  if (e.target.closest("[data-start]")) { toast("Запись подходов и весов появится на шаге 3 🙂"); return; }
+  if (e.target.closest("[data-start]")) { startWorkout(); return; }
+  if (e.target.closest("[data-sum-close]")) { lastSummary = null; view = "today"; render(); window.scrollTo(0, 0); return; }
   if (e.target.closest("[data-redo]")) {
     if (confirm("Пройти анкету заново? План пересоберётся, замены упражнений сбросятся.")) startOnboarding(state.profile);
   }
@@ -874,11 +1125,16 @@ if (state.profile && !state.profile.excluded) {
 function render() {
   if (!state.profile || !state.plan) { startOnboarding(); return; }
   app.classList.remove("no-tabbar");
+  if (view === "workout") { renderWorkout(); return; }
+  if (view === "summary") { renderSummary(); return; }
   if (view === "today") renderToday();
   else if (view === "plan") renderPlan();
   else if (view === "calendar") renderCalendar();
   else if (view === "progress") renderPlaceholder("📈", "Успехи", "Появятся на шаге 4: серия, графики силы и веса тела, рекорды и достижения.");
   renderTabbar();
 }
+
+// Если приложение закрылось посреди тренировки — сразу возвращаемся в неё
+if (state.active && Date.now() - state.active.startedAt < 4 * 3600 * 1000) view = "workout";
 
 render();

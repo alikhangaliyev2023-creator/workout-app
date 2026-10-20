@@ -3,12 +3,13 @@
 const KEY = "workout-app";
 
 // days — отметки календаря по датам: переносы тренировок и «выполнена / пропущена»
-const EMPTY = { profile: null, plan: null, recovery: {}, days: {} };
+// logs — завершённые тренировки, active — тренировка, которая идёт прямо сейчас
+const EMPTY = { profile: null, plan: null, recovery: {}, days: {}, logs: [], active: null };
 
 export function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? { ...EMPTY, ...JSON.parse(raw) } : structuredClone(EMPTY);
+    return raw ? { ...structuredClone(EMPTY), ...JSON.parse(raw) } : structuredClone(EMPTY);
   } catch (e) {
     return structuredClone(EMPTY);
   }
