@@ -5,6 +5,7 @@
 //   body — вес тела [{ date, weight }], goals — цели, которые поставил сам.
 
 import { isoDate, mondayOf } from "./plan.js";
+import { FEELS } from "./workout.js";
 
 const DAY = 86400000;
 const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
@@ -103,6 +104,44 @@ export function stats(ctx) {
   const { current, best: bestStreak } = streaks(ctx);
   const goalsDone = ctx.goals.filter((g) => goalProgress(g, ctx).done).length;
   return { workouts, tonnage, records, maxLift, early, night, streak: current, bestStreak, bodyEntries: ctx.body.length, goalsDone };
+}
+
+// ---------- Самочувствие ----------
+
+const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+
+/** По неделям: насколько тяжело заходили упражнения (1 — легко … 4 — отказ) и энергия (1–5). */
+export function feelWeeks(logs, count) {
+  const now = mondayOf(new Date());
+  const out = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const from = isoDate(addDays(now, -7 * i)), to = isoDate(addDays(now, -7 * i + 6));
+    const inWeek = logs.filter((l) => l.date >= from && l.date <= to);
+    const feel = avg(inWeek.flatMap((l) => l.items.filter((it) => it.feel).map((it) => FEELS[it.feel].score)));
+    const energy = avg(inWeek.map((l) => l.energy).filter(Boolean));
+    out.push({ monday: addDays(now, -7 * i), feel, energy, current: i === 0 });
+  }
+  return out;
+}
+
+/** Совет по усталости за последние 2 недели с оценками. */
+export function fatigueNote(list) {
+  const rated = list.filter((w) => w.feel != null).slice(-2);
+  if (!rated.length) return null;
+  const f = avg(rated.map((w) => w.feel));
+  if (f >= 3.3) return { tone: "red", text: "Тренировки даются всё тяжелее — организм копит усталость. Если так и дальше, сделай разгрузочную неделю раньше." };
+  if (f <= 1.7) return { tone: "green", text: "Последнее время всё легко — значит, пора добавлять вес смелее." };
+  return { tone: "", text: "Нагрузка в норме: тяжело, но с запасом. Так и продолжай." };
+}
+
+/** Средняя энергия на тренировке при разном восстановлении WHOOP. */
+export function energyByRecovery(logs, recovery) {
+  const out = {};
+  for (const level of ["green", "yellow", "red"]) {
+    const list = logs.filter((l) => l.energy && recovery[l.date] && recovery[l.date].level === level).map((l) => l.energy);
+    out[level] = list.length ? { avg: avg(list), n: list.length } : null;
+  }
+  return out;
 }
 
 // ---------- Цели ----------

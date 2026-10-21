@@ -6,8 +6,8 @@ import {
   SPLIT_OPTIONS, cycleWeek, generatePlan, isoDate, splitFor, profileSummary, recoveryLevel, sessionMinutes, weekNote, weekdayIndex, workoutFor,
 } from "./plan.js";
 import * as store from "./store.js";
-import { fmt, lastFor, newWorkout, parseNum, suggestion, summarize, toLog } from "./workout.js";
-import { badges, bestLift, goalProgress, latestWeight, liftSeries, liftedExercises, stats, unlockedIds, weeks } from "./progress.js";
+import { ENERGY, FEELS, fmt, lastFor, newWorkout, painTwice, parseNum, suggestion, summarize, toLog } from "./workout.js";
+import { badges, bestLift, energyByRecovery, fatigueNote, feelWeeks, goalProgress, latestWeight, liftSeries, liftedExercises, stats, unlockedIds, weeks } from "./progress.js";
 
 const app = document.getElementById("app");
 const tabbar = document.getElementById("tabbar");
@@ -829,7 +829,8 @@ function renderWorkout() {
       </section>`;
     }
     const last = lastFor(state.logs, it.exercise);
-    const sug = suggestion(it, last);
+    const sug = suggestion(it, last, cycleWeek(state.plan, fromIso(a.date)));
+    const hurt = painTwice(state.logs, it.exercise);
     const secs = it.unit === "сек";
     const rows = it.sets.map((s, j) => {
       const prev = last && last.sets[j];
@@ -846,9 +847,11 @@ function renderWorkout() {
     }).join("");
     return `<section class="card wk-ex ${finished ? "finished" : ""}" style="${themeOf(a.light ? { light: true } : { key: a.key })}">
       <div class="wk-title"><span class="ex-num">${it.superset ? "+" : i + 1}</span>
-        <button type="button" data-ex="${it.ref}"><b>${esc(ex.name)}</b><small>${it.sets.length} × ${it.reps[0]}–${it.reps[1]}${secs ? " сек" : ""} · ${it.pairStart ? "суперсет ↓" : "отдых " + restLabel(it.rest)}</small></button></div>
+        <button type="button" data-ex="${it.ref}"><b>${esc(ex.name)}</b><small>${it.sets.length} × ${it.reps[0]}–${it.reps[1]}${secs ? " сек" : ""} · ${it.pairStart ? "суперсет ↓" : "отдых " + restLabel(it.rest)}</small></button>
+        ${it.feel ? `<button type="button" class="feel-tag" data-ask="${i}" aria-label="Изменить ощущения">${FEELS[it.feel].emoji}${it.pain ? "🤕" : ""}</button>` : ""}</div>
       ${last ? `<p class="wk-last">Прошлый раз: ${last.sets.map((s) => (s.w != null ? fmt(s.w) + "×" : "") + s.r).join(", ")}</p>` : ""}
       ${sug ? `<p class="wk-hint">${sug.text}</p>` : ""}
+      ${hurt ? `<p class="wk-hint pain">🤕 Два последних раза что-то болело — лучше заменить: нажми на название упражнения</p>` : ""}
       <div class="wk-head"><span>#</span><span>${secs ? "" : "кг"}</span><span>${secs ? "сек" : "повт"}</span><span></span></div>
       ${rows}
       <button type="button" class="wk-add" data-add-set="${i}">＋ подход</button>
@@ -875,21 +878,44 @@ function tick() {
   if (el) el.textContent = clock(Math.floor((Date.now() - a.startedAt) / 1000));
   const bar = document.getElementById("rest-bar");
   if (!bar) return;
-  if (!a.rest) { bar.hidden = true; return; }
-  const left = Math.ceil((a.rest.until - Date.now()) / 1000);
-  if (left <= 0 && !a.rest.rang) { a.rest.rang = true; persist(); beep(); }
-  if (left <= -60) { a.rest = null; persist(); bar.hidden = true; return; }
+  let left = null;
+  if (a.rest) {
+    left = Math.ceil((a.rest.until - Date.now()) / 1000);
+    if (left <= 0 && !a.rest.rang) { a.rest.rang = true; persist(); beep(); }
+    if (left <= -60) { a.rest = null; left = null; persist(); }
+  }
+  const ask = a.ask != null && a.items[a.ask] ? a.ask : null;
+  if (left == null && ask == null) { bar.hidden = true; bar.dataset.layout = ""; return; }
   bar.hidden = false;
-  bar.className = `rest-bar ${left <= 0 ? "go" : ""}`;
-  const pct = Math.max(0, Math.min(100, (left / a.rest.total) * 100));
-  bar.innerHTML = left > 0
-    ? `<div class="rest-fill" style="width:${pct}%"></div>
-       <button type="button" data-rest="-15">−15</button>
-       <div class="rest-mid"><small>Отдых</small><b>${clock(left)}</b></div>
-       <button type="button" data-rest="15">+15</button>
-       <button type="button" data-rest="skip" class="rest-skip">Дальше</button>`
-    : `<div class="rest-mid"><small>Отдых закончился</small><b>Следующий подход 💪</b></div>
-       <button type="button" data-rest="skip" class="rest-skip">OK</button>`;
+
+  // Кнопки пересобираем, только когда меняется вид панели — иначе нажатие может «потеряться»
+  const layout = `${ask}|${left == null ? "none" : left > 0 ? "rest" : "go"}|${ask != null && a.items[ask].pain}`;
+  if (bar.dataset.layout !== layout) {
+    bar.dataset.layout = layout;
+    bar.className = `rest-bar ${left != null && left <= 0 ? "go" : ""} ${ask != null ? "asking" : ""}`;
+    const it = ask != null ? a.items[ask] : null;
+    const question = it ? `
+      <div class="feel-ask">
+        <div class="feel-q"><span>Как зашло «${esc(BY_ID[it.exercise].name)}»?</span><button type="button" data-feel-skip aria-label="Не отвечать">✕</button></div>
+        <div class="feel-row">${Object.entries(FEELS).map(([k, f]) => `
+          <button type="button" class="${it.feel === k ? "on" : ""}" data-feel="${k}"><span>${f.emoji}</span><b>${f.label}</b><small>${f.hint}</small></button>`).join("")}</div>
+        <button type="button" class="feel-pain ${it.pain ? "on" : ""}" data-pain>🤕 Что-то болело${it.pain ? " ✓" : ""}</button>
+      </div>` : "";
+    const timer = left == null ? "" : left > 0
+      ? `<div class="rest-row"><div class="rest-fill" id="rest-fill"></div>
+           <button type="button" data-rest="-15">−15</button>
+           <div class="rest-mid"><small>Отдых</small><b id="rest-time"></b></div>
+           <button type="button" data-rest="15">+15</button>
+           <button type="button" data-rest="skip" class="rest-skip">Дальше</button></div>`
+      : `<div class="rest-row"><div class="rest-mid"><small>Отдых закончился</small><b>Следующий подход 💪</b></div>
+           <button type="button" data-rest="skip" class="rest-skip">OK</button></div>`;
+    bar.innerHTML = question + timer;
+  }
+  if (left != null && left > 0) {
+    const t = document.getElementById("rest-time"), f = document.getElementById("rest-fill");
+    if (t) t.textContent = clock(left);
+    if (f) f.style.width = `${Math.max(0, Math.min(100, (left / a.rest.total) * 100))}%`;
+  }
 }
 setInterval(tick, 500);
 
@@ -906,6 +932,8 @@ function setDone(i, j) {
     if (rIn && s.r === "") s.r = rIn.placeholder;
   }
   s.done = true;
+  // Последний подход упражнения — спрашиваем, как зашло (если ещё не отвечал)
+  if (!it.cardio && !it.feel && it.sets.every((x) => x.done)) a.ask = i;
   if (it.cardio) a.rest = null;
   else if (it.pairStart) { a.rest = null; toast(`Суперсет: сразу ${BY_ID[a.items[i + 1].exercise].name}`); }
   else a.rest = { until: Date.now() + it.rest * 1000, total: it.rest, rang: false };
@@ -921,6 +949,25 @@ function finishWorkout() {
   if (!done) { toast("Отметь хотя бы один подход ✓ — или отмени тренировку"); return; }
   const left = a.items.reduce((n, it) => n + it.sets.filter((s) => !s.done).length, 0);
   if (left && !confirm(`Осталось ${left} подх. — всё равно завершить?`)) return;
+  askEnergy();
+}
+
+/** Последний вопрос: как тренировка в целом. Потом — итоги. */
+function askEnergy() {
+  sheet.innerHTML = `
+    <div class="sheet" role="dialog" aria-label="Как тренировка?">
+      <div class="sheet-grip"></div>
+      <h2>Как тренировка в целом?</h2>
+      <p class="muted small">Вместе с восстановлением WHOOP это покажет, в какие дни ты реально в форме.</p>
+      <div class="energy-row">${ENERGY.map(([n, emoji, label]) => `<button type="button" data-energy="${n}"><span>${emoji}</span><b>${label}</b></button>`).join("")}</div>
+      <button type="button" class="btn secondary" data-energy="0">Пропустить</button>
+    </div>`;
+  sheet.hidden = false;
+}
+
+function completeWorkout() {
+  const a = state.active;
+  a.ask = null;
   const log = toLog(a);
   const before = unlockedIds(stats(progressCtx()));
   lastSummary = { ...summarize(log, state.logs), name: a.name, key: a.key, light: a.light };
@@ -971,6 +1018,24 @@ function workoutClick(e) {
     const y = window.scrollY; renderWorkout(); window.scrollTo(0, y);
     return true;
   }
+  const feel = e.target.closest("[data-feel]");
+  if (feel) {
+    const a = state.active;
+    a.items[a.ask].feel = feel.dataset.feel;
+    a.ask = null;
+    persist();
+    const y = window.scrollY; renderWorkout(); window.scrollTo(0, y);
+    return true;
+  }
+  if (e.target.closest("[data-pain]")) {
+    const it = state.active.items[state.active.ask];
+    it.pain = !it.pain;
+    persist(); tick();
+    return true;
+  }
+  if (e.target.closest("[data-feel-skip]")) { state.active.ask = null; persist(); tick(); return true; }
+  const askAgain = e.target.closest("[data-ask]");
+  if (askAgain) { state.active.ask = Number(askAgain.dataset.ask); persist(); tick(); return true; }
   const rest = e.target.closest("[data-rest]");
   if (rest) {
     const a = state.active;
@@ -1094,6 +1159,8 @@ function renderProgress() {
         </div>`).join("")}</div>
     </section>
 
+    ${feelCard()}
+
     <h3 class="section-title">Мои цели</h3>
     <section class="card rise">
       ${goals || '<p class="muted small">Поставь цель — например, «жим лёжа 100 кг» или «вес тела 78 кг» — и следи, сколько осталось.</p>'}
@@ -1126,6 +1193,30 @@ function renderProgress() {
         <span>${b.emoji}</span><b>${esc(b.title)}</b><small>${esc(b.desc)}</small>
         ${b.done ? "" : `<div class="goal-bar"><i style="width:${Math.min(100, (b.have / b.need) * 100)}%"></i></div>`}
       </div>`).join("")}</div>`;
+}
+
+/** Самочувствие: как тяжело заходили тренировки по неделям и энергия при разном восстановлении. */
+function feelCard() {
+  const list = feelWeeks(state.logs, 8);
+  if (!list.some((w) => w.feel != null || w.energy != null)) {
+    return `<h3 class="section-title">Самочувствие</h3>
+      <section class="card"><p class="muted small">После каждого упражнения отмечай, как зашло (😴 🙂 😤 💀) — тут появится, копится ли усталость.</p></section>`;
+  }
+  const note = fatigueNote(list);
+  const rec = energyByRecovery(state.logs, state.recovery);
+  const recLine = ["green", "yellow", "red"].filter((k) => rec[k]).map((k) => `<span><i class="dot ${k}"></i>${fmt(Math.round(rec[k].avg * 10) / 10)} из 5</span>`).join("");
+  return `<h3 class="section-title">Самочувствие</h3>
+    <section class="card rise">
+      <div class="feel-bars">${list.map((w) => {
+        const emoji = w.feel == null ? "" : FEELS[w.feel < 1.5 ? "easy" : w.feel < 2.5 ? "ok" : w.feel < 3.5 ? "hard" : "fail"].emoji;
+        return `<div class="${w.current ? "now" : ""}">
+          <div class="bar"><i style="height:${w.feel == null ? 0 : (w.feel / 4) * 100}%" class="lvl${w.feel == null ? 0 : Math.round(w.feel)}"></i></div>
+          <span class="fe">${emoji || "·"}</span><span>${w.current ? "эта" : shortDate(isoDate(w.monday))}</span></div>`;
+      }).join("")}</div>
+      <p class="feel-legend">Выше столбик — тяжелее заходили упражнения</p>
+      ${note ? `<p class="feel-note ${note.tone}">${note.text}</p>` : ""}
+      ${recLine ? `<div class="energy-rec"><small>Энергия на тренировке при восстановлении WHOOP</small><div>${recLine}</div></div>` : ""}
+    </section>`;
 }
 
 // Шторка «Новая цель»
@@ -1248,6 +1339,13 @@ function openExercise(ref) {
 
 sheet.addEventListener("click", (e) => {
   if (e.target === sheet || e.target.closest("[data-close]")) { sheet.hidden = true; return; }
+  const energy = e.target.closest("[data-energy]");
+  if (energy) {
+    if (Number(energy.dataset.energy)) state.active.energy = Number(energy.dataset.energy);
+    sheet.hidden = true;
+    completeWorkout();
+    return;
+  }
   if (goalSheetClick(e)) return;
   const exclude = e.target.closest("[data-exclude]");
   if (exclude) {

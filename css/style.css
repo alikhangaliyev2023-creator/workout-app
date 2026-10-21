@@ -640,14 +640,17 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .rest-bar {
   position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 40;
-  display: flex; align-items: center; gap: 8px; overflow: hidden;
+  display: flex; flex-direction: column; gap: 10px; overflow: hidden;
   padding: 10px; border-radius: 24px; background: var(--text); color: #fff;
   box-shadow: 0 18px 40px -16px rgba(15, 15, 23, .6);
   animation: up .3s cubic-bezier(.2, .8, .2, 1);
 }
+.rest-row { position: relative; display: flex; align-items: center; gap: 8px; }
+.rest-bar.asking .rest-row { padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, .12); }
 .rest-bar.go { background: var(--green); }
 .rest-fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255, 255, 255, .12); transition: width .5s linear; }
-.rest-bar > * { position: relative; }
+.rest-row > * { position: relative; }
+.rest-row > .rest-fill { position: absolute; border-radius: 16px; }
 .rest-bar button { flex: none; height: 44px; min-width: 52px; border: 0; border-radius: 16px; background: rgba(255, 255, 255, .14); color: #fff; font-weight: 800; }
 .rest-bar .rest-skip { padding: 0 14px; background: #fff; color: var(--text); }
 .rest-mid { flex: 1; text-align: center; }
@@ -776,6 +779,51 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .sheet .field { margin-top: 10px; }
 .sheet .field select { max-width: 60%; border: 0; background: none; font: 700 15px var(--font); text-align: right; color: var(--accent); }
 .sheet .muted.small { margin-top: 8px; }
+
+/* ---------- Как зашло упражнение ---------- */
+
+.feel-q { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 0; }
+.feel-q span { font-weight: 700; font-size: 15px; line-height: 1.25; }
+.rest-bar .feel-q button { min-width: 32px; height: 32px; border-radius: 50%; font-size: 13px; }
+.feel-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.rest-bar .feel-row button { height: auto; min-width: 0; padding: 8px 2px; border-radius: 16px; display: flex; flex-direction: column; align-items: center; }
+.feel-row span { font-size: 26px; line-height: 1.1; }
+.feel-row b { font-size: 13px; margin-top: 2px; }
+.feel-row small { font-size: 10px; font-weight: 600; opacity: .65; line-height: 1.2; }
+.rest-bar .feel-row button.on { background: #fff; color: var(--text); }
+.rest-bar .feel-pain { width: 100%; height: 38px; margin-top: 6px; font-size: 14px; background: rgba(255, 255, 255, .08); }
+.rest-bar .feel-pain.on { background: var(--red); }
+.feel-tag { flex: none; padding: 6px 9px; border: 0; border-radius: 12px; background: var(--surface); font-size: 18px; line-height: 1; }
+.wk-hint.pain { background: var(--red-soft); color: var(--red); }
+
+.energy-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 16px 0 4px; }
+.energy-row button { padding: 12px 2px; border: 0; border-radius: 16px; background: var(--surface); display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.energy-row button:active { transform: scale(.94); background: var(--accent-soft); }
+.energy-row span { font-size: 28px; line-height: 1; }
+.energy-row b { font-size: 12px; }
+
+.feel-bars { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; text-align: center; }
+.feel-bars .bar { height: 70px; border-radius: 10px; background: var(--surface); display: flex; align-items: flex-end; overflow: hidden; }
+.feel-bars .bar i { display: block; width: 100%; border-radius: 10px; }
+.feel-bars .lvl1 { background: #7dd3fc; }
+.feel-bars .lvl2 { background: var(--green); }
+.feel-bars .lvl3 { background: var(--yellow); }
+.feel-bars .lvl4 { background: var(--red); }
+.feel-bars .fe { display: block; margin-top: 4px; font-size: 16px; line-height: 1.2; }
+.feel-bars span { display: block; font-size: 10px; color: var(--faint); font-weight: 600; }
+.feel-bars .now span { color: var(--text); }
+.feel-legend { margin: 8px 0 0; font-size: 12px; color: var(--faint); text-align: center; }
+.feel-note { margin: 12px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--surface); font-size: 14px; line-height: 1.4; }
+.feel-note.red { background: var(--red-soft); color: var(--red); }
+.feel-note.green { background: var(--green-soft); color: var(--green); }
+.energy-rec { margin-top: 12px; }
+.energy-rec small { display: block; color: var(--muted); font-size: 13px; }
+.energy-rec div { display: flex; gap: 14px; margin-top: 6px; font-weight: 800; }
+.energy-rec span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; }
+.dot.green { background: var(--green); }
+.dot.yellow { background: var(--yellow); }
+.dot.red { background: var(--red); }
 
 .toast {
   position: fixed;
