@@ -24,12 +24,14 @@ function persist() {
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-function toast(text) {
+/** Всплывающее сообщение. action — кнопка в нём, например { label: "Отменить", run }. */
+function toast(text, action = null) {
   const el = document.getElementById("toast");
-  el.textContent = text;
+  el.innerHTML = `<span>${esc(text)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ""}`;
   el.hidden = false;
+  if (action) el.querySelector("button").onclick = () => { el.hidden = true; action.run(); };
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, 2600);
+  toast.timer = setTimeout(() => { el.hidden = true; }, action ? 6000 : 2600);
 }
 
 function dose(item) {
@@ -64,7 +66,7 @@ tabbar.addEventListener("click", (e) => {
   const button = e.target.closest("button[data-tab]");
   if (!button) return;
   view = button.dataset.tab;
-  cal.mode = null;
+  cal.pick = null;
   render();
   window.scrollTo(0, 0);
 });
@@ -505,11 +507,17 @@ function addDays(d, n) {
 const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const longDay = (d) => capitalize(d.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" }));
 
-/** Тренировка по шаблону недели (без учёта переносов). */
+/**
+ * Тренировка по шаблону недели (без учёта переносов отдельных дней).
+ * shifts — сдвиги очереди: после переноса на занятый день все тренировки дальше идут на один день позже.
+ */
 function plannedIdx(iso) {
   if (iso < state.plan.startDate) return null;
   const s = sessionForDay(weekdayIndex(fromIso(iso)));
-  return s ? state.plan.sessions.indexOf(s) : null;
+  if (!s) return null;
+  const len = state.plan.sessions.length;
+  const shift = (state.plan.shifts || []).reduce((n, x) => n + (x.from <= iso ? x.n : 0), 0);
+  return (((state.plan.sessions.indexOf(s) - shift) % len) + len) % len;
 }
 /** Номер тренировки на дату с учётом переносов, или null — отдых. */
 function sessionIdxOn(iso) {
@@ -527,23 +535,83 @@ function setDay(iso, patch) {
   const d = { ...state.days[iso], ...patch };
   for (const k of Object.keys(d)) if (d[k] === undefined) delete d[k];
   if ("session" in d && d.session === plannedIdx(iso)) delete d.session;
-  if (!("session" in d)) delete d.pair;
+  delete d.pair;   // от старой версии переносов
   if (Object.keys(d).length) state.days[iso] = d;
   else delete state.days[iso];
 }
 
-/** Переносит тренировку; если в тот день уже есть тренировка — они меняются местами. */
+/**
+ * Переносит тренировку с одного дня на другой.
+ * Свободный день — просто ставим туда. Занятый день — тренировки не меняются местами, а сдвигаются:
+ *   вперёд — занятая тренировка уходит на следующий тренировочный день, и так весь календарь дальше;
+ *   назад — сдвигаются только тренировки между этими днями.
+ */
 function moveSession(from, to) {
-  const a = sessionIdxOn(from), b = sessionIdxOn(to);
-  setDay(to, { session: a, status: undefined, pair: from });
-  setDay(from, { session: b, status: undefined, pair: to });
+  const x = sessionIdxOn(from);
+  const busy = sessionIdxOn(to);
+  if (busy == null) {
+    setDay(to, { session: x, status: undefined });
+    setDay(from, { session: null, status: undefined });
+    return;
+  }
+  if (to > from) {
+    setDay(from, { session: null, status: undefined });
+    setDay(to, { session: x, status: undefined });
+    // С дня после переноса каждая тренировка по плану сдвигается на один тренировочный день вперёд
+    state.plan.shifts = [...(state.plan.shifts || []), { from: isoDate(addDays(fromIso(to), 1)), n: 1 }];
+    return;
+  }
+  const slots = [];
+  for (let d = fromIso(to); isoDate(d) <= from; d = addDays(d, 1)) {
+    const iso = isoDate(d);
+    if (sessionIdxOn(iso) != null && (state.days[iso] || {}).status !== "done") slots.push(iso);
+  }
+  const seq = slots.map(sessionIdxOn);
+  slots.forEach((iso, i) => setDay(iso, { session: i === 0 ? x : seq[i - 1], status: undefined }));
 }
 
-/** Возвращает день как по плану — и тот день, с которым он поменялся. */
-function resetDay(iso) {
-  const pair = state.days[iso] && state.days[iso].pair;
-  setDay(iso, { session: undefined });
-  if (pair && state.days[pair] && state.days[pair].pair === iso) setDay(pair, { session: undefined });
+/** Возвращает весь календарь с сегодняшнего дня как по плану: без переносов и сдвигов. */
+function resetCalendar() {
+  const today = todayIso();
+  for (const iso of Object.keys(state.days)) {
+    if (iso >= today && "session" in state.days[iso]) setDay(iso, { session: undefined });
+  }
+  // Сдвиги до сегодня оставляем для прошлых дней, а с сегодня компенсируем их
+  const past = (state.plan.shifts || []).filter((s) => s.from < today);
+  const sum = past.reduce((n, s) => n + s.n, 0);
+  state.plan.shifts = sum ? [...past, { from: today, n: -sum }] : past;
+}
+
+// Отмена последнего переноса: снимок календаря до него
+let undoMove = null;
+function snapshotCalendar() {
+  return JSON.stringify({ days: state.days, shifts: state.plan.shifts || [] });
+}
+function restoreCalendar(snap) {
+  const s = JSON.parse(snap);
+  state.days = s.days;
+  state.plan.shifts = s.shifts;
+}
+
+/** Группа мышц тренировки — чтобы предупредить, если одни и те же мышцы два дня подряд. */
+function groupOf(session) {
+  const key = session.key;
+  return /^(chest|push)/.test(key) ? "chest" : /^(back|pull)/.test(key) ? "back"
+    : /^(legs|lower)/.test(key) ? "legs" : /^shoulders/.test(key) ? "shoulders"
+    : key === "arms" ? "arms" : /^upper/.test(key) ? "upper" : "full";
+}
+
+/** Есть ли в ближайшие 3 недели одни и те же мышцы два дня подряд. */
+function backToBack(fromIsoDate) {
+  let prev = null;
+  for (let i = 0; i < 21; i++) {
+    const iso = isoDate(addDays(fromIso(fromIsoDate), i));
+    const idx = sessionIdxOn(iso);
+    const s = idx == null ? null : state.plan.sessions[idx];
+    if (s && prev && groupOf(s) === groupOf(prev.s)) return { a: prev.iso, b: iso, name: s.name };
+    prev = s ? { s, iso } : null;
+  }
+  return null;
 }
 
 function markDay(iso, status) {
@@ -576,7 +644,7 @@ function dropFutureMoves() {
 
 // ---------- Экран «Календарь» ----------
 
-const cal = { month: null, sel: null, mode: null };   // mode: "move" | "add" | null
+const cal = { month: null, sel: null, pick: null };   // pick — день, тренировку с которого сейчас переносим
 
 function renderCalendar() {
   const today = todayIso();
@@ -601,7 +669,9 @@ function renderCalendar() {
         else if (ds.status === "missed" || ds.status === "skipped") stats.missed++;
         else if (ds.status === "planned") stats.planned++;
       }
-      const cls = ["cd", ds.status, inMonth ? "" : "out", iso === today ? "today" : "", iso === cal.sel ? "sel" : "", ds.moved ? "moved" : ""].join(" ");
+      const target = cal.pick && iso !== cal.pick && iso >= today && ds.status !== "done";
+      const cls = ["cd", ds.status, inMonth ? "" : "out", iso === today ? "today" : "", iso === (cal.pick || cal.sel) ? "sel" : "", ds.moved ? "moved" : "",
+        cal.pick ? (target ? "target" : iso === cal.pick ? "source" : "dim") : ""].join(" ");
       cells += `<button type="button" class="${cls}" data-day="${iso}" style="${ds.theme}"><span>${date.getDate()}</span></button>`;
     }
     weeks += `<div class="cal-week ${deload ? "deload" : ""}">${cells}</div>`;
@@ -610,7 +680,11 @@ function renderCalendar() {
   app.innerHTML = `
     <header class="large-title"><small>Неделя ${cycleWeek(state.plan)} из ${CYCLE_WEEKS}</small><h1>Календарь</h1></header>
 
-    <section class="card cal-card rise">
+    ${cal.pick ? `<div class="pick-banner" style="${themeOf(state.plan.sessions[sessionIdxOn(cal.pick)])}">
+      <div><b>Куда перенести «${esc(state.plan.sessions[sessionIdxOn(cal.pick)].name)}»?</b><small>Нажми на день. Если там уже тренировка — она и все следующие сдвинутся дальше.</small></div>
+      <button type="button" data-pick-cancel>Отмена</button></div>` : ""}
+
+    <section class="card cal-card ${cal.pick ? "picking" : "rise"}">
       <div class="cal-nav">
         <button type="button" data-cal-shift="-1" aria-label="Предыдущий месяц">‹</button>
         <b>${MONTHS[m]} ${y}</b>
@@ -632,119 +706,164 @@ function renderCalendar() {
       <div><b>${stats.planned}</b><span>впереди</span></div>
     </div>
 
-    ${dayCard(cal.sel, today)}`;
+    <p class="hint-center">Нажми на день — откроется меню: перенести, отметить, добавить.</p>
+    ${Object.keys(state.days).some((k) => k >= today && "session" in state.days[k]) || (state.plan.shifts || []).reduce((n, x) => n + x.n, 0) % state.plan.sessions.length
+      ? `<button type="button" class="btn danger" data-cal-reset>Вернуть календарь как по плану</button>` : ""}`;
 }
 
-function dayCard(iso, today) {
+/** Как назвать день относительно сегодня: «сегодня», «завтра», «пт 24». */
+function relDay(iso, today) {
+  const diff = Math.round((fromIso(iso) - fromIso(today)) / 86400000);
+  if (diff === 0) return "сегодня";
+  if (diff === 1) return "завтра";
+  if (diff === 2) return "послезавтра";
+  const d = fromIso(iso);
+  return `${WEEKDAYS[weekdayIndex(d)].toLowerCase()} ${d.getDate()}`;
+}
+
+/** Меню дня: открывается снизу сразу по нажатию на день. */
+function openDaySheet(iso) {
+  const today = todayIso();
   const date = fromIso(iso);
   const ds = dayState(iso, today);
-  const diff = Math.round((date - fromIso(today)) / 86400000);
-  const when = diff === 0 ? "Сегодня" : diff === 1 ? "Завтра" : diff === -1 ? "Вчера" : diff < 0 ? "Прошедший день" : `Через ${diff} дн.`;
   const started = isoDate(addDays(date, 6 - weekdayIndex(date))) >= state.plan.startDate;
   const week = started ? cycleWeek(state.plan, date) : null;
   const weekLabel = week ? (week === CYCLE_WEEKS ? " · разгрузочная неделя" : ` · неделя ${week} из ${CYCLE_WEEKS}`) : "";
   const future = iso >= today;
   const STATUS = { done: "✓ Выполнена", skipped: "Пропущена", missed: "Не отмечена", planned: "По плану" };
+  const s = ds.session;
 
   let body;
-  if (ds.session || ds.status === "done") {
-    const s = ds.session;
+  if (s || ds.status === "done") {
+    // Быстрый перенос: два ближайших дня после этого (или с сегодня, если тренировка в прошлом)
+    let quick = "";
+    if (s && ds.status !== "done") {
+      const base = iso < today ? addDays(fromIso(today), -1) : date;
+      quick = [1, 2].map((n) => {
+        const t = isoDate(addDays(base, n));
+        const busy = dayState(t, today);
+        const sub = busy.status === "done" ? "уже сделано" : busy.session ? `там «${esc(busy.session.name)}» — сдвинется дальше` : "свободно";
+        return busy.status === "done" ? "" : `<button type="button" class="move-btn" data-move-to="${t}"><b>↪ На ${relDay(t, today)}</b><small>${sub}</small></button>`;
+      }).join("") + `<button type="button" class="move-btn other" data-pick><b>📅 Другой день</b><small>выбрать в календаре</small></button>`;
+    }
     body = `
       <div class="day-session" style="${ds.theme}">
         <i></i>
         <div><b>${esc(ds.name)}</b><small>${s ? `${esc(s.focus)} · ~${sessionMinutes(s.items)} мин` : "Выполнена"}</small></div>
         <span class="tag ${ds.status}">${STATUS[ds.status]}${ds.moved ? " · перенесена" : ""}</span>
       </div>
+      ${quick ? `<div class="move-grid">${quick}</div>` : ""}
       ${s ? `<details class="day-ex"><summary>Упражнения (${s.items.length})</summary>${exerciseList(s.items, ds.idx)}</details>` : ""}
       <div class="day-actions">
         ${iso <= today && s ? `
           <button type="button" class="act ${ds.status === "done" ? "on done" : ""}" data-mark="done">✓ Выполнена</button>
           <button type="button" class="act ${ds.status === "skipped" ? "on skipped" : ""}" data-mark="skipped">✕ Пропустил</button>` : ""}
-        ${s && ds.status !== "done" ? `<button type="button" class="act ${cal.mode === "move" ? "on" : ""}" data-mode="move">↪ Перенести</button>` : ""}
         ${s && future && ds.status !== "done" ? `<button type="button" class="act" data-remove>Убрать</button>` : ""}
         ${ds.status === "done" && !s ? `<button type="button" class="act on done" data-mark="done">✓ Снять отметку</button>` : ""}
       </div>`;
   } else {
-    body = `
-      <p class="day-rest">😌 День отдыха</p>
-      <div class="day-actions">
-        ${future ? `<button type="button" class="act ${cal.mode === "add" ? "on" : ""}" data-mode="add">＋ Добавить тренировку</button>` : ""}
-      </div>`;
+    body = `<p class="day-rest">😌 День отдыха</p>
+      ${future ? `<p class="picker-hint">Поставить тренировку на этот день:</p>
+        ${state.plan.sessions.map((x, i) => `<button type="button" class="alt add-alt" data-add="${i}" style="${themeOf(x)}"><i></i><b>${esc(x.name)}</b><span>${esc(x.focus)}</span></button>`).join("")}` : ""}`;
   }
 
-  let picker = "";
-  if (cal.mode === "move" && ds.session) {
-    const start = iso < today ? fromIso(today) : addDays(date, -3) < fromIso(today) ? fromIso(today) : addDays(date, -3);
-    const targets = Array.from({ length: 10 }, (_, i) => addDays(start, i)).filter((d) => isoDate(d) !== iso);
-    picker = `<p class="picker-hint">Куда перенести? Если там уже есть тренировка — они поменяются местами.</p>
-      <div class="picker">${targets.map((d) => {
-        const t = dayState(isoDate(d), today);
-        return `<button type="button" class="pick" data-move-to="${isoDate(d)}" style="${t.session ? themeOf(t.session) : ""}">
-          <small>${WEEKDAYS[weekdayIndex(d)]}</small><b>${d.getDate()}</b><i class="${t.session ? "busy" : ""}"></i>
-          <em>${t.session ? esc(t.session.name) : "свободно"}</em></button>`;
-      }).join("")}</div>`;
-  } else if (cal.mode === "add" && !ds.session) {
-    picker = `<p class="picker-hint">Какую тренировку поставить на этот день?</p>
-      ${state.plan.sessions.map((s, i) => `<button type="button" class="alt add-alt" data-add="${i}" style="${themeOf(s)}"><i></i><b>${esc(s.name)}</b><span>${esc(s.focus)}</span></button>`).join("")}`;
-  }
-
-  return `
-    <section class="card day-card rise">
-      <div class="eyebrow">${when}${weekLabel}</div>
+  cal.sel = iso;
+  sheet.innerHTML = `
+    <div class="sheet day-sheet" role="dialog" aria-label="${esc(longDay(date))}">
+      <div class="sheet-grip"></div>
+      <div class="eyebrow">${capitalize(relDay(iso, today))}${weekLabel}</div>
       <h2>${esc(longDay(date))}</h2>
       ${body}
-      ${picker}
-      ${ds.moved && future ? `<button type="button" class="btn danger" data-reset-day>Вернуть как по плану</button>` : ""}
-    </section>`;
+      <button type="button" class="btn secondary" data-close>Закрыть</button>
+    </div>`;
+  sheet.hidden = false;
+}
+
+/** Переносит выбранную тренировку и показывает «Отменить» + предупреждение про одни мышцы подряд. */
+function doMove(from, to) {
+  const name = state.plan.sessions[sessionIdxOn(from)].name;
+  const cascade = sessionIdxOn(to) != null;
+  const snap = snapshotCalendar();
+  moveSession(from, to);
+  persist();
+  undoMove = snap;
+  cal.pick = null;
+  cal.sel = to;
+  const d = fromIso(to);
+  cal.month = new Date(d.getFullYear(), d.getMonth(), 1);
+  sheet.hidden = true;
+  renderCalendar();
+  const clash = backToBack(todayIso() < from ? todayIso() : from);
+  const warn = clash ? ` ⚠️ «${clash.name}» два дня подряд (${relDay(clash.a, todayIso())} и ${relDay(clash.b, todayIso())}) — лучше с днём отдыха между` : "";
+  toast(`«${name}» → ${relDay(to, todayIso())}${cascade ? ", остальные сдвинулись" : ""}.${warn}`, {
+    label: "Отменить",
+    run: () => { restoreCalendar(undoMove); undoMove = null; persist(); renderCalendar(); toast("Перенос отменён"); },
+  });
 }
 
 function calendarClick(e) {
   const day = e.target.closest("[data-day]");
   if (day) {
     const iso = day.dataset.day;
-    cal.sel = iso;
-    cal.mode = null;
+    if (cal.pick) {
+      // Выбираем, куда перенести
+      if (iso === cal.pick) { cal.pick = null; renderCalendar(); return true; }
+      if (iso < todayIso()) { toast("Можно перенести только на сегодня или позже"); return true; }
+      if ((state.days[iso] || {}).status === "done") { toast("В этот день тренировка уже сделана"); return true; }
+      doMove(cal.pick, iso);
+      return true;
+    }
     const d = fromIso(iso);
     if (d.getMonth() !== cal.month.getMonth()) cal.month = new Date(d.getFullYear(), d.getMonth(), 1);
+    cal.sel = iso;
     renderCalendar();
+    openDaySheet(iso);
     return true;
   }
   const shift = e.target.closest("[data-cal-shift]");
   if (shift) { shiftMonth(Number(shift.dataset.calShift)); return true; }
+  if (e.target.closest("[data-pick-cancel]")) { cal.pick = null; renderCalendar(); return true; }
+  if (e.target.closest("[data-cal-reset]")) {
+    if (!confirm("Вернуть календарь с сегодняшнего дня как по плану? Все переносы и сдвиги отменятся.")) return true;
+    const snap = snapshotCalendar();
+    resetCalendar(); persist(); renderCalendar();
+    undoMove = snap;
+    toast("Календарь как по плану", { label: "Отменить", run: () => { restoreCalendar(undoMove); persist(); renderCalendar(); } });
+    return true;
+  }
+
+  // Кнопки из меню дня
+  const to = e.target.closest("[data-move-to]");
+  if (to) { doMove(cal.sel, to.dataset.moveTo); return true; }
+  if (e.target.closest("[data-pick]")) {
+    cal.pick = cal.sel;
+    sheet.hidden = true;
+    renderCalendar();
+    document.querySelector(".cal-card").scrollIntoView({ behavior: "smooth", block: "start" });
+    return true;
+  }
   const mark = e.target.closest("[data-mark]");
   if (mark) {
     markDay(cal.sel, mark.dataset.mark);
-    persist(); cal.mode = null; renderCalendar();
+    persist(); renderCalendar(); openDaySheet(cal.sel);
     if (state.days[cal.sel] && state.days[cal.sel].status === "done") toast("Отмечено 💪");
     return true;
   }
-  const mode = e.target.closest("[data-mode]");
-  if (mode) { cal.mode = cal.mode === mode.dataset.mode ? null : mode.dataset.mode; renderCalendar(); return true; }
-  const to = e.target.closest("[data-move-to]");
-  if (to) {
-    const name = state.plan.sessions[sessionIdxOn(cal.sel)].name;
-    moveSession(cal.sel, to.dataset.moveTo);
-    persist();
-    cal.sel = to.dataset.moveTo; cal.mode = null;
-    const d = fromIso(cal.sel);
-    cal.month = new Date(d.getFullYear(), d.getMonth(), 1);
-    renderCalendar();
-    toast(`«${name}» → ${longDay(d).toLowerCase()}`);
-    return true;
-  }
   const add = e.target.closest("[data-add]");
-  if (add) { setDay(cal.sel, { session: Number(add.dataset.add) }); persist(); cal.mode = null; renderCalendar(); return true; }
+  if (add) { setDay(cal.sel, { session: Number(add.dataset.add) }); persist(); sheet.hidden = true; renderCalendar(); toast("Тренировка добавлена"); return true; }
   if (e.target.closest("[data-remove]")) {
     if (!confirm("Убрать тренировку с этого дня? Она не перенесётся на другой день.")) return true;
-    setDay(cal.sel, { session: null, status: undefined }); persist(); cal.mode = null; renderCalendar(); return true;
+    const snap = snapshotCalendar();
+    setDay(cal.sel, { session: null, status: undefined }); persist(); sheet.hidden = true; renderCalendar();
+    undoMove = snap;
+    toast("Тренировка убрана", { label: "Отменить", run: () => { restoreCalendar(undoMove); persist(); renderCalendar(); } });
+    return true;
   }
-  if (e.target.closest("[data-reset-day]")) { resetDay(cal.sel); persist(); cal.mode = null; renderCalendar(); return true; }
   return false;
 }
 
 function shiftMonth(n) {
   cal.month = new Date(cal.month.getFullYear(), cal.month.getMonth() + n, 1);
-  cal.mode = null;
   renderCalendar();
 }
 
@@ -1347,6 +1466,11 @@ sheet.addEventListener("click", (e) => {
     return;
   }
   if (goalSheetClick(e)) return;
+  if (view === "calendar" && sheet.querySelector(".day-sheet")) {
+    const ex = e.target.closest("[data-ex]");
+    if (ex) { openExercise(ex.dataset.ex); return; }
+    if (calendarClick(e)) return;
+  }
   const exclude = e.target.closest("[data-exclude]");
   if (exclude) {
     const name = BY_ID[exclude.dataset.exclude].name;
@@ -1396,8 +1520,9 @@ app.addEventListener("click", (e) => {
   }
   if (e.target.closest("[data-today-move]")) {
     view = "calendar";
-    cal.sel = todayIso(); cal.mode = "move"; cal.month = null;
+    cal.sel = todayIso(); cal.pick = null; cal.month = null;
     render();
+    openDaySheet(todayIso());
     return;
   }
   if (e.target.closest("[data-start]")) { startWorkout(); return; }

@@ -4,7 +4,7 @@
 // если сети нет или она тормозит больше 3 секунд — открываем сохранённую копию.
 // Шрифты Google — «сначала копия»: они не меняются.
 
-const CACHE = "workout-v3";
+const CACHE = "workout-v4";
 const FILES = [
   "./", "index.html", "manifest.webmanifest", "css/style.css",
   "js/app.js", "js/exercises.js", "js/plan.js", "js/store.js", "js/workout.js", "js/progress.js",
